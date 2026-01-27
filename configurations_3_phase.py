@@ -48,3 +48,32 @@ class ThreePhaseConfiguration:
         epsilon = self.t_step / 1000.0
         values = np.arange(self.t_min, self.t_max + epsilon, self.t_step)
         return [float(round(x, 6)) for x in values]
+
+# --- Pre-defined Configuration Instances ---
+
+# 1. Standard / High Resolution (Default)
+standard_configuration = ThreePhaseConfiguration()
+
+# 2. Low Resolution (Faster, good for general trends)
+low_res_configuration = ThreePhaseConfiguration(
+    base_file_name="3Phase_LowRes",
+    xb_step=0.01,
+    t_step=10.0,
+    n_total_values=[1, 5e-17, 5e-19, 5e-21]
+)
+
+# 3. Debugging (Very fast, minimal points to check if code runs)
+debug_configuration = ThreePhaseConfiguration(
+    base_file_name="3Phase_Debug",
+    xb_step=0.2,
+    t_step=200.0,
+    n_total_values=[5e-19]
+)
+
+# 4. Sensitivity Example (Override specific surface energy)
+sensitivity_configuration = ThreePhaseConfiguration(
+    base_file_name="3Phase_Sensitivity_AgCu_Liquid",
+    surface_energy_overrides={
+        ("Ag", "FCC", "Cu", "Liquid"): 0.5  # Example: Force this interface energy to 0.5
+    }
+)

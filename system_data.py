@@ -5,7 +5,7 @@ import interaction_properties
 from pure_material_properties import BaseMaterial
 from surface_energy_calculations import SurfaceEnergyValues
 from interaction_properties import BaseInteraction
-from generic_configurations_3_phase import ThreePhaseConfiguration
+from configurations_3_phase import ThreePhaseConfiguration
 
 
 class SystemData:
