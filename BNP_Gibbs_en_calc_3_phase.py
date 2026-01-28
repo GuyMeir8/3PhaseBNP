@@ -21,27 +21,32 @@ class GibbsEnergyCalculator3Phase:
                                has_skin: bool = False,
                                xB_skin: float = 1.0,
                             ) -> float:
-        
-        if has_skin:
-            phases = primary_phases + ("Liquid",)
-        else:
-            phases = primary_phases
-        
+        try:
+            if has_skin:
+                phases = primary_phases + ("Liquid",)
+            else:
+                phases = primary_phases
+            
 
-        n_mp, x_mp, g_mp = self._calc_mole_splits_and_geo(
-            A_ratio_alpha, 
-            B_ratio_alpha,
-            T, 
-            n_total, 
-            xB_total, 
-            phases,
-            geometry_type,
-            has_skin,
-            xB_skin
-        )
-    
-        return 0.0  # Placeholder for actual Gibbs energy calculation logic
-    
+            n_mp, x_mp, r_vals = self._calc_mole_splits_and_geo(
+                A_ratio_alpha, 
+                B_ratio_alpha,
+                T, 
+                n_total, 
+                xB_total, 
+                phases,
+                geometry_type,
+                has_skin,
+                xB_skin
+            )
+        
+            return 0.0  # Placeholder for actual Gibbs energy calculation logic
+        
+        except ValueError:
+            # This catches failures from _calc_mole_splits_and_geo,
+            # such as convergence failure or insufficient moles for the skin.
+            return 1.0
+
     @staticmethod
     def calc_r_from_V(V):
         """
@@ -61,13 +66,23 @@ class GibbsEnergyCalculator3Phase:
         Rows correspond to materials (A, B), columns to the provided phases.
         """
         mat_names = self.system_data.config.materials
+        v_mp_rows = []
+        for mat_name in mat_names:
+            row = []
+            material = self.system_data.get_material(mat_name)
+            for p in phases:
+                # Use .get() for safe dictionary access to avoid KeyErrors
+                phase_data = material.phases.get(p)
+                
+                # Check if phase_data and its 'v' attribute exist and are callable
+                if phase_data and callable(phase_data.v):
+                    row.append(phase_data.v(T))
+                else:
+                    # Raise a specific error if data is missing
+                    raise ValueError(f"Molar volume function 'v' is missing or not callable for material '{mat_name}' in phase '{p}'.")
+            v_mp_rows.append(row)
 
-        v_mp = np.array([
-            [self.system_data.get_material(mat_name).phases[p].v(T) for p in phases]
-            for mat_name in mat_names
-        ])
-
-        return v_mp
+        return np.array(v_mp_rows)
 
     def _get_sigma_value(
             self,
@@ -86,22 +101,38 @@ class GibbsEnergyCalculator3Phase:
             T: float,
             v_gamma: np.ndarray,
             x_gamma: np.ndarray,
-            v_delta: np.ndarray = 1.0,
-            x_delta: np.ndarray = 1.0,
+            v_delta: np.ndarray = None,
+            x_delta: np.ndarray = None,
     ) -> float:
-
+        """Calculates the interfacial energy between phase gamma and phase delta (or vacuum)."""
+        phase_gamma_name = curr_phases[0]
+        phase_delta_name = curr_phases[1] if len(curr_phases) > 1 else None
+        
         v23x_gamma = v_gamma**(2/3) * x_gamma
-        v23x_delta = v_delta**(2/3) * x_delta
-        denom = np.sum(v23x_gamma) * np.sum(v23x_delta)
+        denom_gamma = np.sum(v23x_gamma)
 
-        total_sigma = 0.0
         mats = self.system_data.config.materials
-        for i, gamma_mat in enumerate(mats):
-            for j, delta_mat in enumerate(mats):
-                curr_sigma = self._get_sigma_value(T, gamma_mat, curr_phases[0], delta_mat, next(iter(curr_phases[1:]), None))
-                v23x_delta_slice = v23x_delta[j] if j < len(v23x_delta) else 1.0
-                total_sigma += curr_sigma * v23x_gamma[i] * v23x_delta_slice / denom
-        return total_sigma
+        total_sigma = 0.0
+
+        # Case 1: Interface with another phase
+        if v_delta is not None and x_delta is not None:
+            v23x_delta = v_delta**(2/3) * x_delta
+            denom_delta = np.sum(v23x_delta)
+            
+            for i, gamma_mat in enumerate(mats):
+                for j, delta_mat in enumerate(mats):
+                    sigma_val = self._get_sigma_value(T, gamma_mat, phase_gamma_name, delta_mat, phase_delta_name)
+                    total_sigma += sigma_val * v23x_gamma[i] * v23x_delta[j]
+            
+            return total_sigma / (denom_gamma * denom_delta)
+        
+        # Case 2: Interface with vacuum
+        else:
+            for i, gamma_mat in enumerate(mats):
+                sigma_val = self._get_sigma_value(T, gamma_mat, phase_gamma_name)
+                total_sigma += sigma_val * v23x_gamma[i]
+            
+            return total_sigma / denom_gamma
 
 
     def _calc_mole_splits_and_geo(
@@ -147,7 +178,7 @@ class GibbsEnergyCalculator3Phase:
             n_A_alpha = A_ratio_alpha * n_A_total
             n_B_alpha = B_ratio_alpha * n_B_total
             n_no_skin_mp, x_no_skin_mp = _calc_generic_split(n_A_alpha, n_B_alpha, n_A_total, n_B_total)
-            V_no_skin = np.sum(n_no_skin_mp * v_mp)
+            V_no_skin = np.sum(n_no_skin_mp * v_mp[:,:2])
             r_no_skin = self.calc_r_from_V(V_no_skin)
             mats = self.system_data.config.materials
             weighted_skin_thickness = 2 * (1 - xB_skin) * self.system_data.material_data[mats[0]].atomic_radius + 2 * xB_skin * self.system_data.material_data[mats[1]].atomic_radius
@@ -163,6 +194,11 @@ class GibbsEnergyCalculator3Phase:
                 n_B_skin = n_skin_prev_guess * xB_skin
                 n_A_no_skin = n_A_total - n_A_skin
                 n_B_no_skin = n_B_total - n_B_skin
+
+                if n_A_no_skin < 0 or n_B_no_skin < 0:
+                    # Not enough material to form the requested skin, this path is invalid.
+                    break
+
                 n_A_alpha = A_ratio_alpha * n_A_no_skin
                 n_B_alpha = B_ratio_alpha * n_B_no_skin 
                 n_mp_no_skin, x_mp_no_skin = _calc_generic_split(n_A_alpha, n_B_alpha, n_A_no_skin, n_B_no_skin)
@@ -178,7 +214,7 @@ class GibbsEnergyCalculator3Phase:
                         h_a, h_b, a_i = r_vals
                         r_a = (h_a**2 + a_i**2) / (2 * h_a)
                         r_b = (h_b**2 + a_i**2) / (2 * h_b)
-                        V_no_skin = np.sum(n_no_skin_mp * v_mp[:,0:1])
+                        V_no_skin = np.sum(n_mp_no_skin * v_mp[:,:2])
                         r_a_with_skin = r_a + weighted_skin_thickness
                         r_b_with_skin = r_b + weighted_skin_thickness
                         theta_a = np.arcsin(a_i / r_a)
@@ -194,7 +230,7 @@ class GibbsEnergyCalculator3Phase:
                             phases,
                             T,
                         )
-                        V_no_skin = np.sum(n_no_skin_mp * v_mp[:,0:1])
+                        V_no_skin = np.sum(n_mp_no_skin * v_mp[:,:2])
                         r_with_skin = r_vals[1] + weighted_skin_thickness
                         V_with_skin = (4/3) * np.pi * (r_with_skin ** 3)
                         V_skin = V_with_skin - V_no_skin
@@ -207,11 +243,8 @@ class GibbsEnergyCalculator3Phase:
                     n_skin_prev_guess = n_skin_curr_guess*0.5 + n_skin_prev_guess*0.5
 
             if not was_successful:
-                raise ValueError("Failed to converge skin mole calculation within 100 iterations.")
+                raise ValueError("Failed to converge skin mole calculation or insufficient moles for skin.")
             else:
-                n_A_skin = n_skin_curr_guess * (1 - xB_skin)
-                n_B_skin = n_skin_curr_guess * xB_skin
-
                 n_mp = np.array([
                     [n_A_alpha, n_A_no_skin - n_A_alpha, n_A_skin],
                     [n_B_alpha, n_B_no_skin - n_B_alpha, n_B_skin],
@@ -264,28 +297,30 @@ class GibbsEnergyCalculator3Phase:
         Calculates the geometry parameters for Janus particles.
         """
         v_mp = self._get_v_mp(T, phases)
-        outer_phase = next(iter(phases[2:]), None)
-        v_outer_phase = v_mp[:,2] if outer_phase else 1.0
-        x_outer_phase = x_mp[:,2] if outer_phase else 1.0
+        outer_phase_name = next(iter(phases[2:]), None)
+        v_outer_phase = v_mp[:, 2] if outer_phase_name else None
+        x_outer_phase = x_mp[:, 2] if outer_phase_name else None
+
         sigma_outer = [
             self._calc_sigma(
-            phases,
-            T,
-            v_mp[:,i],
-            x_mp[:,i],
-            v_outer_phase,
-            x_outer_phase,
-        ) 
-        for i in range(2)
+                (phases[i], outer_phase_name),
+                T,
+                v_mp[:, i],
+                x_mp[:, i],
+                v_delta=v_outer_phase,
+                x_delta=x_outer_phase,
+            )
+            for i in range(2)
         ]
         sigma_alpha_out, sigma_beta_out = sigma_outer
+
         sigma_interface = self._calc_sigma(
-            phases,
+            (phases[0], phases[1]),
             T,
             v_mp[:,0],
             x_mp[:,0],
-            v_mp[:,1],
-            x_mp[:,1],
+            v_delta=v_mp[:,1],
+            x_delta=x_mp[:,1],
         )
         nv_mp = n_mp * v_mp
         def helper_calc_Janus_geo(sigma_interface, sigma_alpha_out, sigma_beta_out):
