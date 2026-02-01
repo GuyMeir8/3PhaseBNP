@@ -22,7 +22,7 @@ class SurfaceEnergyValues:
                     },
                     'Cu' : {
                         'FCC': lambda T: 0.275,
-                        'Liquid': lambda T: 0.0
+                        'Liquid': lambda T: 0.025
                     },
                     # 'Vacuum' : lambda T : 1e-3*(1207-0.228*T)
                     'Vacuum': lambda T: 1e-3*(1207-0.228*T)
@@ -49,7 +49,7 @@ class SurfaceEnergyValues:
                     },
                     'Cu': {
                         'FCC': lambda T: 0.225,
-                        'Liquid': lambda T: 0
+                        'Liquid': lambda T: 0.025
                     },
                     # 'Vacuum' : lambda T : 1e-3*(1585-0.211*T)
                     'Vacuum': lambda T: 1e-3*(1207-0.228*T)

@@ -39,13 +39,183 @@ class GibbsEnergyCalculator3Phase:
                 has_skin,
                 xB_skin
             )
-        
-            return 0.0  # Placeholder for actual Gibbs energy calculation logic
+            G_ideal = self.calc_G_ideal(n_mp, x_mp, T, phases)
+            G_excess = self.calc_G_excess(n_mp, x_mp, T, phases)
+            G_surface = self.calc_G_surface(n_mp, x_mp, r_vals, T, phases, geometry_type, has_skin)
+
+            return G_ideal + G_excess + G_surface
         
         except ValueError:
             # This catches failures from _calc_mole_splits_and_geo,
             # such as convergence failure or insufficient moles for the skin.
             return 1.0
+
+    def calc_G_excess(self, n_mp: np.ndarray, x_mp: np.ndarray, T: float, phases: Tuple[str, ...]) -> float:
+        """
+        Calculates the excess Gibbs free energy for the system.
+        n_mp: Mole matrix (rows: materials, columns: phases)
+        x_mp: Mole fraction matrix (rows: materials, columns: phases)
+        T: Temperature
+        Returns the excess Gibbs free energy.
+        """
+        G_excess = 0.0
+        num_phases = n_mp.shape[1]
+
+        # 1. Get Interaction Data (e.g. "AgCu")
+        mat_names = self.system_data.config.materials
+        interaction_name = "".join(mat_names)
+        
+        interaction = self.system_data.get_interaction(interaction_name)
+
+        # 2. Sum Excess Energy for each phase
+        for i in range(num_phases):
+            phase_name = phases[i]
+            
+            n_phase = np.sum(n_mp[:, i])
+
+            L_values = interaction.phases[phase_name].get_Li_per_T(T)
+            xA = x_mp[0, i]
+            xB = x_mp[1, i]
+            
+            # Redlich-Kister: Sum( L_k * (xA - xB)^k )
+            interaction_sum = np.sum([L * ((xA - xB) ** k) for k, L in enumerate(L_values)])
+            G_excess += n_phase * xA * xB * interaction_sum
+
+        return G_excess
+        
+    def calc_G_surface(
+            self, n_mp: np.ndarray, 
+            x_mp: np.ndarray, 
+            r_vals: np.ndarray, 
+            T: float, phases: Tuple[str, ...], 
+            geometry_type: str, 
+            has_skin: bool = False) -> float:
+        """
+        Calculates the surface Gibbs free energy.
+        Uses r_vals which contains pre-calculated geometry parameters.
+        """
+        G_surface = 0.0
+        v_mp = self._get_v_mp(T, phases)
+        
+        if geometry_type == "Janus":
+            h_a, h_b, a_i = r_vals
+            
+            # Surface areas of the spherical caps (Alpha and Beta)
+            # Area = pi * (h^2 + a^2)
+            A_alpha_outer = np.pi * (h_a**2 + a_i**2)
+            A_beta_outer = np.pi * (h_b**2 + a_i**2)
+            A_interface = np.pi * a_i**2
+            
+            # 1. Alpha-Beta Interface Energy
+            sigma_ab = self._calc_sigma((phases[0], phases[1]), T, v_mp[:,0], x_mp[:,0], v_mp[:,1], x_mp[:,1])
+            G_surface += A_interface * sigma_ab
+            
+            if has_skin:
+                # 2. Alpha-Skin & Beta-Skin Interfaces
+                sigma_as = self._calc_sigma((phases[0], phases[2]), T, v_mp[:,0], x_mp[:,0], v_mp[:,2], x_mp[:,2])
+                G_surface += A_alpha_outer * sigma_as
+                
+                sigma_bs = self._calc_sigma((phases[1], phases[2]), T, v_mp[:,1], x_mp[:,1], v_mp[:,2], x_mp[:,2])
+                G_surface += A_beta_outer * sigma_bs
+                
+                # 3. Skin-Vacuum Interface
+                mats = self.system_data.config.materials
+                r_atom_A = self.system_data.material_data[mats[0]].atomic_radius
+                r_atom_B = self.system_data.material_data[mats[1]].atomic_radius
+                xB_skin = x_mp[1, 2]
+                weighted_skin_thickness = 2 * (1 - xB_skin) * r_atom_A + 2 * xB_skin * r_atom_B
+
+                r_a = (h_a**2 + a_i**2) / (2 * h_a)
+                r_b = (h_b**2 + a_i**2) / (2 * h_b)
+
+                A_alpha_vac = A_alpha_outer * ((r_a + weighted_skin_thickness) / r_a)**2
+                A_beta_vac = A_beta_outer * ((r_b + weighted_skin_thickness) / r_b)**2
+                A_skin_vac = A_alpha_vac + A_beta_vac
+                
+                sigma_sv = self._calc_sigma((phases[2],), T, v_mp[:,2], x_mp[:,2])
+                G_surface += A_skin_vac * sigma_sv
+                
+            else:
+                # 2. Alpha-Vacuum & Beta-Vacuum Interfaces
+                sigma_av = self._calc_sigma((phases[0],), T, v_mp[:,0], x_mp[:,0])
+                G_surface += A_alpha_outer * sigma_av
+                
+                sigma_bv = self._calc_sigma((phases[1],), T, v_mp[:,1], x_mp[:,1])
+                G_surface += A_beta_outer * sigma_bv
+
+        elif geometry_type == "Core_Shell":
+            r_core, r_inner_total = r_vals
+            A_core = 4 * np.pi * r_core**2
+            A_inner_total = 4 * np.pi * r_inner_total**2
+            
+            # 1. Core-Shell Interface (Alpha-Beta)
+            sigma_ab = self._calc_sigma((phases[0], phases[1]), T, v_mp[:,0], x_mp[:,0], v_mp[:,1], x_mp[:,1])
+            G_surface += A_core * sigma_ab
+            
+            if has_skin:
+                # 2. Beta-Skin Interface
+                sigma_bs = self._calc_sigma((phases[1], phases[2]), T, v_mp[:,1], x_mp[:,1], v_mp[:,2], x_mp[:,2])
+                G_surface += A_inner_total * sigma_bs
+                
+                # 3. Skin-Vacuum Interface
+                V_total = np.sum(n_mp * v_mp)
+                r_total = self.calc_r_from_V(V_total)
+                A_skin_vac = 4 * np.pi * r_total**2
+                
+                sigma_sv = self._calc_sigma((phases[2],), T, v_mp[:,2], x_mp[:,2])
+                G_surface += A_skin_vac * sigma_sv
+                
+            else:
+                # 2. Beta-Vacuum Interface
+                sigma_bv = self._calc_sigma((phases[1],), T, v_mp[:,1], x_mp[:,1])
+                G_surface += A_inner_total * sigma_bv
+        
+        return G_surface
+        
+
+
+    def calc_G_ideal(
+            self,
+            n_mp: np.ndarray,
+            x_mp: np.ndarray,
+            T: float,
+            phases: Tuple[str, ...],
+    ) -> float:
+        """
+        Calculates the ideal Gibbs free energy for the system.
+        n_mp: Mole matrix (rows: materials, columns: phases)
+        x_mp: Mole fraction matrix (rows: materials, columns: phases)
+        T: Temperature
+        Returns the ideal Gibbs free energy.
+        """
+        R = 8.31446261815324  # J/(mol·K)
+        G_ideal = 0.0
+        num_phases = n_mp.shape[1]
+        g_mp = self._get_g_mp(T, phases)
+
+        for phase_idx in range(num_phases):
+            n_phase = np.sum(n_mp[:, phase_idx])
+            g_ideal_phase = x_mp[:,phase_idx] * g_mp[:,phase_idx] + R * T * x_mp[:,phase_idx] * np.log(x_mp[:,phase_idx] + 1e-20)
+            G_ideal += n_phase * np.sum(g_ideal_phase)
+        return G_ideal
+    
+    def _get_g_mp(self, T, phases):
+        """
+        Calculates the Gibbs free energy matrix for materials in the given phases.
+        Rows correspond to materials (A, B), columns to the provided phases.
+        """
+        mat_names = self.system_data.config.materials
+        g_mp_rows = []
+        for mat_name in mat_names:
+            row = []
+            material = self.system_data.get_material(mat_name)
+            for p in phases:
+                # Use .get() for safe dictionary access to avoid KeyErrors
+                phase_data = material.phases.get(p)
+                row.append(phase_data.g0(T))
+            g_mp_rows.append(row)
+
+        return np.array(g_mp_rows)
 
     @staticmethod
     def calc_r_from_V(V):
@@ -210,6 +380,7 @@ class GibbsEnergyCalculator3Phase:
                             x_mp_no_skin,
                             phases,
                             T,
+                            xB_skin,
                         )
                         h_a, h_b, a_i = r_vals
                         r_a = (h_a**2 + a_i**2) / (2 * h_a)
@@ -292,6 +463,7 @@ class GibbsEnergyCalculator3Phase:
             x_mp: np.ndarray,
             phases: Tuple[str, ...],
             T: float,
+            xB_skin: float = None,
     ) -> np.ndarray:
         """
         Calculates the geometry parameters for Janus particles.
@@ -299,7 +471,10 @@ class GibbsEnergyCalculator3Phase:
         v_mp = self._get_v_mp(T, phases)
         outer_phase_name = next(iter(phases[2:]), None)
         v_outer_phase = v_mp[:, 2] if outer_phase_name else None
-        x_outer_phase = x_mp[:, 2] if outer_phase_name else None
+        if xB_skin is not None:
+            x_outer_phase = np.array([1 - xB_skin, xB_skin])
+        else:
+            x_outer_phase = None
 
         sigma_outer = [
             self._calc_sigma(
@@ -322,7 +497,7 @@ class GibbsEnergyCalculator3Phase:
             v_delta=v_mp[:,1],
             x_delta=x_mp[:,1],
         )
-        nv_mp = n_mp * v_mp
+        nv_mp = n_mp * v_mp[:, :2]
         def helper_calc_Janus_geo(sigma_interface, sigma_alpha_out, sigma_beta_out):
             V_total = np.sum(nv_mp)
             r_total = self.calc_r_from_V(V_total)
@@ -370,7 +545,7 @@ class GibbsEnergyCalculator3Phase:
         """
         v_mp = self._get_v_mp(T, phases)
         V_alpha = np.sum(n_mp[:,0] * v_mp[:,0])
-        V_total = np.sum(n_mp * v_mp)
+        V_total = np.sum(n_mp[:,:2] * v_mp[:,:2])
         r_alpha = self.calc_r_from_V(V_alpha)
         r_total = self.calc_r_from_V(V_total)
         r_vals = np.array([r_alpha, r_total]) ### r_vals def - Core-Shell no Skin
