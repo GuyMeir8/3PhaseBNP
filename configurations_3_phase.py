@@ -11,6 +11,7 @@ class ThreePhaseConfiguration:
         base_file_name: Prefix for output files.
         materials: List of material names (e.g., ["Ag", "Cu"]).
         phases: List of available phases (e.g., ["FCC", "Liquid"]).
+        geometries: List of available geometries (e.g., ["Core_Shell", "Janus"]).
         
         surface_energy_overrides: 
             A dictionary to override specific surface energy values from the database.
@@ -23,6 +24,7 @@ class ThreePhaseConfiguration:
     # System Definition
     materials: Tuple[str, str] = ("Ag", "Cu")
     phases: Tuple[str, ...] = ("FCC", "Liquid")
+    geometries: Tuple[str, ...] = ("Core_Shell", "Janus")
     
     # Sensitivity Analysis / Overrides
     # Example: { ("Ag", "FCC", "Cu", "Liquid"): 0.15 }
