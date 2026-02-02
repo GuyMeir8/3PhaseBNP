@@ -1,7 +1,10 @@
+import glob
+import os
 from configurations_3_phase import ThreePhaseConfiguration, low_res_configuration
 from system_data import SystemData
 from BNP_Gibbs_en_calc_3_phase import GibbsEnergyCalculator3Phase
 from BNP_optimizer_3_phase import BNPOptimizer3Phase
+from plotting_3_phase import PhaseDiagramPlotting3Phase
 
 if __name__ == "__main__":
     config = ThreePhaseConfiguration(
@@ -14,14 +17,25 @@ if __name__ == "__main__":
     system_data = SystemData(config)
     optimizer = BNPOptimizer3Phase(system_data)
 
-    test_res = optimizer.find_minimum_energy(
+    test_res = optimizer.calculator.calculate_total_energy(
         n_total=5e-17,
-        T=700.0,
-        xB_total=0.9,
+        A_ratio_alpha=0.0001,
+        B_ratio_alpha=0.0001,
+        T=400.0,
+        xB_total=0.01,
         primary_phases=("FCC", "FCC"),
-        geometry_type="Core_Shell",
-        has_skin=False,
-        xB_skin_guess=0.2,
+        geometry_type="Janus",
+        has_skin=True,
+        xB_skin=0.0001,
     )
-        
-    print("Optimization Result:", test_res)
+    
+    # print("Test Result:", test_res)
+
+    # Automatically find and plot the latest result file in the Results folder
+    list_of_files = glob.glob('Results/*.csv') 
+    if list_of_files:
+        latest_file = max(list_of_files, key=os.path.getctime)
+        print(f"Found latest file: {latest_file}")
+        PhaseDiagramPlotting3Phase(latest_file)
+    else:
+        print("No result files found in Results/ directory.")

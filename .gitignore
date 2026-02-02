@@ -1,16 +1,1 @@
-# Python
-__pycache__/
-*.pyc
-
-# Virtual Environments
-venv/
-.venv/
-env/
-
-# VS Code settings (optional, often good to ignore user-specific settings)
-.vscode/
-
-# Output files (prevent large data files from bloating the repo)
 Results/
-*.csv
-*.png

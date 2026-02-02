@@ -172,8 +172,6 @@ class GibbsEnergyCalculator3Phase:
         
         return G_surface
         
-
-
     def calc_G_ideal(
             self,
             n_mp: np.ndarray,
@@ -388,12 +386,13 @@ class GibbsEnergyCalculator3Phase:
                         V_no_skin = np.sum(n_mp_no_skin * v_mp[:,:2])
                         r_a_with_skin = r_a + weighted_skin_thickness
                         r_b_with_skin = r_b + weighted_skin_thickness
-                        theta_a = np.arcsin(a_i / r_a)
-                        theta_b = np.arcsin(a_i / r_b)
+                        theta_a = np.arcsin(np.clip(a_i / r_a, -1.0, 1.0))
+                        theta_b = np.arcsin(np.clip(a_i / r_b, -1.0, 1.0))
                         V_a_with_skin = (1/3) * np.pi * (r_a_with_skin**3) * (2 + np.cos(theta_a)) * (1 - np.cos(theta_a))**2
                         V_b_with_skin = (1/3) * np.pi * (r_b_with_skin**3) * (2 + np.cos(theta_b)) * (1 - np.cos(theta_b))**2
                         V_skin = V_a_with_skin + V_b_with_skin - V_no_skin
                         n_skin_curr_guess = V_skin / weighted_skin_molar_volume
+
                     case "Core_Shell":
                         r_vals = self.calc_core_shell_geometry_for_known_nx(
                             n_mp_no_skin,
@@ -407,7 +406,7 @@ class GibbsEnergyCalculator3Phase:
                         V_skin = V_with_skin - V_no_skin
                         n_skin_curr_guess = V_skin / weighted_skin_molar_volume
                     
-                if abs(n_skin_curr_guess - n_skin_prev_guess) < 1e-6:
+                if abs(n_skin_curr_guess - n_skin_prev_guess) < n_total * 1e-6:
                     was_successful = True
                     break
                 else:
@@ -525,8 +524,15 @@ class GibbsEnergyCalculator3Phase:
 
                 return [eq1, eq2]
             sol = optimize.root(helper_Janus_geo_ri_calc, h_initial_guesses, method='hybr')
+            
+            if not sol.success:
+                raise ValueError("Janus geometry solver failed to converge.")
+
             term_inside_sqrt = (((6 * np.sum(nv_mp[:,0])) / (np.pi * sol.x[0])) - sol.x[0] ** 2) / 3
-            a_i_result = (term_inside_sqrt ** (1/2))
+            if term_inside_sqrt < 0:
+                raise ValueError("Unphysical Janus Geometry: Negative interface radius squared.")
+            
+            a_i_result = np.sqrt(term_inside_sqrt)
             h_a_res, h_b_res = sol.x
             r_vals = np.array([h_a_res, h_b_res, a_i_result]) ### r_vals def - Janus no Skin
             return r_vals

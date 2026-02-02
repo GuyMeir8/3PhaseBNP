@@ -16,6 +16,11 @@ class OptimizationResult3Phase:
     primary_phases: Tuple[str, str]
     has_skin: bool
     xB_skin: float
+    n_alpha: float = 0.0
+    n_beta: float = 0.0
+    xB_alpha: float = 0.0
+    xB_beta: float = 0.0
+    r_vals: List[float] = None
 
 class BNPOptimizer3Phase:
     """
@@ -154,11 +159,9 @@ class BNPOptimizer3Phase:
         
         initial_guesses = []
         if has_skin:
-            # Expand 2D guesses to 3D by adding variations of xB_skin
-            skin_guesses = [xB_skin_guess, 0.1, 0.5, 0.9]
+            # Use xB_total as the guess for xB_skin
             for bg in base_guesses:
-                for sg in skin_guesses:
-                    initial_guesses.append(list(bg) + [sg])
+                initial_guesses.append(list(bg) + [xB_total])
         else:
             initial_guesses = base_guesses
 
@@ -180,20 +183,46 @@ class BNPOptimizer3Phase:
             return OptimizationResult3Phase(
                 G_min=float('inf'), A_ratio_alpha=float('nan'), B_ratio_alpha=float('nan'),
                 geometry_type=geometry_type, primary_phases=primary_phases,
-                has_skin=has_skin, xB_skin=xB_skin_guess
+                has_skin=has_skin, xB_skin=xB_skin_guess,
+                n_alpha=float('nan'), n_beta=float('nan'), xB_alpha=float('nan'), xB_beta=float('nan'), r_vals=[]
             )
 
         if has_skin:
             A_ratio_at_min, B_ratio_at_min, xB_skin_at_min = best_ratios
+            phases = primary_phases + ("Liquid",)
         else:
             A_ratio_at_min, B_ratio_at_min = best_ratios
             xB_skin_at_min = xB_skin_guess
+            phases = primary_phases
         
+        # Recalculate geometry and mole splits at the minimum to get detailed results
+        try:
+            n_mp, x_mp, r_vals = self.calculator._calc_mole_splits_and_geo(
+                A_ratio_at_min, 
+                B_ratio_at_min,
+                T, 
+                n_total, 
+                xB_total, 
+                phases,
+                geometry_type,
+                has_skin,
+                xB_skin_at_min
+            )
+            n_alpha = np.sum(n_mp[:, 0])
+            n_beta = np.sum(n_mp[:, 1])
+            xB_alpha = x_mp[1, 0]
+            xB_beta = x_mp[1, 1]
+            r_vals_list = r_vals.tolist()
+        except ValueError:
+            n_alpha, n_beta, xB_alpha, xB_beta = float('nan'), float('nan'), float('nan'), float('nan')
+            r_vals_list = []
+
         # The optimizer worked with G/n_total, so we scale it back up for the final result.
         G_min = best_g_per_mole * n_total
 
         return OptimizationResult3Phase(
             G_min=G_min, A_ratio_alpha=A_ratio_at_min, B_ratio_alpha=B_ratio_at_min,
             geometry_type=geometry_type, primary_phases=primary_phases,
-            has_skin=has_skin, xB_skin=xB_skin_at_min
+            has_skin=has_skin, xB_skin=xB_skin_at_min,
+            n_alpha=n_alpha, n_beta=n_beta, xB_alpha=xB_alpha, xB_beta=xB_beta, r_vals=r_vals_list
         )

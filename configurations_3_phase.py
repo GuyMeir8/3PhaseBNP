@@ -62,6 +62,7 @@ low_res_configuration = ThreePhaseConfiguration(
     xb_step=0.01,
     t_step=10.0,
     n_total_values=[1, 5e-17, 5e-19, 5e-21]
+    # n_total_values=[1, 5e-17]
 )
 
 # 3. Debugging (Very fast, minimal points to check if code runs)

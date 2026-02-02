@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import time
 import datetime
+import os
 from typing import Tuple, Dict, Any, List
 import itertools
 from joblib import Parallel, delayed
@@ -17,7 +18,7 @@ def _calculate_single_phase_energy(
     n_total: float,
     xB_total: float,
     phase: str
-) -> float:
+) -> Tuple[float, float]:
     """
     Helper to calculate single phase energy (Ideal + Excess + Surface).
     Assumes a spherical droplet of the given phase.
@@ -52,7 +53,7 @@ def _calculate_single_phase_energy(
     
     G_surface = area * sigma
     
-    return G_ideal + G_excess + G_surface
+    return G_ideal + G_excess + G_surface, r
 
 def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -73,7 +74,7 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
         if task_type == "SinglePhase":
             phase = task_data['phase']
-            G_single = _calculate_single_phase_energy(system_data, T, n_total, xB_total, phase)
+            G_single, r_single = _calculate_single_phase_energy(system_data, T, n_total, xB_total, phase)
             
             results_list.append({
                 "T": T,
@@ -86,7 +87,12 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "HasSkin": False,
                 "xB_skin": np.nan,
                 "A_ratio_alpha": 1.0,
-                "B_ratio_alpha": 1.0
+                "B_ratio_alpha": 1.0,
+                "n_alpha": n_total,
+                "n_beta": 0.0,
+                "xB_alpha": xB_total,
+                "xB_beta": np.nan,
+                "r_vals": [r_single]
             })
 
         elif task_type == "MultiPhase":
@@ -116,7 +122,12 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "HasSkin": has_skin,
                 "xB_skin": res.xB_skin if has_skin else np.nan,
                 "A_ratio_alpha": res.A_ratio_alpha,
-                "B_ratio_alpha": res.B_ratio_alpha
+                "B_ratio_alpha": res.B_ratio_alpha,
+                "n_alpha": res.n_alpha,
+                "n_beta": res.n_beta,
+                "xB_alpha": res.xB_alpha,
+                "xB_beta": res.xB_beta,
+                "r_vals": res.r_vals
             })
     except Exception:
         # Return empty list on failure so the main loop continues
@@ -151,6 +162,10 @@ class BNPSeriesProcessor:
                     # 2. Multi Phase Tasks
                     for geo in geometries:
                         for phases in phase_pairs:
+                            # Skip Liquid-Liquid
+                            if phases[0] == "Liquid" and phases[1] == "Liquid":
+                                continue
+
                             for has_skin in skin_options:
                                 
                                 # Janus Symmetry: Skip redundant pairs (e.g. Liquid-FCC if FCC-Liquid done)
@@ -197,7 +212,8 @@ class BNPSeriesProcessor:
             
         end_time = time.time()
         duration = end_time - start_time
-        print(f"Simulation completed in {duration:.2f} seconds.")
+        duration_formatted = str(datetime.timedelta(seconds=duration))
+        print(f"Simulation completed in {duration_formatted}.")
         
         # 3. Save Results
         df = pd.DataFrame(flat_results)
@@ -205,12 +221,18 @@ class BNPSeriesProcessor:
         # Sort for readability
         df = df.sort_values(by=["n_total", "T", "xB_total", "G_min"])
         
+        # Create Results directory if it doesn't exist
+        output_dir = "Results"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
         # Generate filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.config.base_file_name}_{timestamp}.csv"
+        filepath = os.path.join(output_dir, filename)
         
-        df.to_csv(filename, index=False)
-        print(f"Results saved to {filename}")
+        df.to_csv(filepath, index=False)
+        print(f"Results saved to {filepath}")
 
 if __name__ == "__main__":
     # Select Configuration
