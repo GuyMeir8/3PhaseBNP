@@ -39,6 +39,7 @@ class GibbsEnergyCalculator3Phase:
                 has_skin,
                 xB_skin
             )
+            x_mp = np.clip(x_mp, 1e-20, 1.0 - 1e-20)  # Prevent log(0) issues
             G_ideal = self.calc_G_ideal(n_mp, x_mp, T, phases)
             G_excess = self.calc_G_excess(n_mp, x_mp, T, phases)
             G_surface = self.calc_G_surface(n_mp, x_mp, r_vals, T, phases, geometry_type, has_skin)
@@ -193,7 +194,7 @@ class GibbsEnergyCalculator3Phase:
 
         for phase_idx in range(num_phases):
             n_phase = np.sum(n_mp[:, phase_idx])
-            g_ideal_phase = x_mp[:,phase_idx] * g_mp[:,phase_idx] + R * T * x_mp[:,phase_idx] * np.log(x_mp[:,phase_idx] + 1e-20)
+            g_ideal_phase = x_mp[:,phase_idx] * g_mp[:,phase_idx] + R * T * x_mp[:,phase_idx] * np.log(x_mp[:,phase_idx])
             G_ideal += n_phase * np.sum(g_ideal_phase)
         return G_ideal
     

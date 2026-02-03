@@ -175,7 +175,7 @@ class BNPSeriesProcessor:
                                 # Macroscopic (n=1) constraints
                                 if abs(n_total - 1.0) < 1e-9:
                                     if has_skin: continue
-                                    if geo != "Janus": continue
+                                    if geo != "Core_Shell": continue
 
                                 tasks.append({
                                     'task_type': 'MultiPhase',

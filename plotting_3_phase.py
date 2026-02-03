@@ -91,8 +91,9 @@ class PhaseDiagramPlotting3Phase:
         return f"{geo}{suffix}__{a}+{b}"
 
     def enforce_phase_threshold(self, row):
-        # Logic to convert Core_Shell to SinglePhase if core or shell is too small (e.g. < 1%)
-        THRESHOLD = 0.01 
+        # 1. Define Threshold (Increase to 2% to catch numerical noise)
+        THRESHOLD = 0.0000001 
+        
         if row["Geometry"] == "SinglePhase":
             return row
         
@@ -100,20 +101,41 @@ class PhaseDiagramPlotting3Phase:
         na = row["n_alpha"]
         nb = row["n_beta"]
         
+        # --- FIX STARTS HERE ---
+        # If calculation failed (NaN) or data is missing
         if pd.isna(na) or pd.isna(nb) or n_tot == 0:
+            # Capture the original Beta phase type (e.g., "FCC" or "Liquid") BEFORE overwriting it
+            original_beta_phase = row["PhaseBeta"]
+
+            row["Geometry"] = "SinglePhase"
+            row["PhaseBeta"] = "None" 
+
+            if row["xB_total"] > 0.5:
+                # Dominant B -> Single Phase Beta. Use the captured value.
+                row["PhaseAlpha"] = original_beta_phase
+            # Else Dominant A -> Single Phase Alpha (already set in PhaseAlpha)
+            
+            row["HasSkin"] = False
             return row
+        # -----------------------
 
         # If Core (Alpha) is tiny -> SinglePhase Beta
         if (na / n_tot) < THRESHOLD:
+            # Capture Beta phase type
+            original_beta_phase = row["PhaseBeta"]
+            
             row["Geometry"] = "SinglePhase"
-            row["PhaseAlpha"] = row["PhaseBeta"]
+            # Set Alpha to be the type of Beta (since Beta is the only thing left)
+            row["PhaseAlpha"] = original_beta_phase
             row["PhaseBeta"] = "None"
+            row["HasSkin"] = False
             return row
         
         # If Shell (Beta) is tiny -> SinglePhase Alpha
         if (nb / n_tot) < THRESHOLD:
             row["Geometry"] = "SinglePhase"
             row["PhaseBeta"] = "None"
+            row["HasSkin"] = False
             return row
             
         return row
@@ -127,6 +149,7 @@ class PhaseDiagramPlotting3Phase:
             
             plt.figure(figsize=(12, 8))
             base_size = 35
+            MIN_VISIBLE_RATIO = 0.05 # Ensures a phase takes up at least 15% of the marker area
 
             # ---------------------------------------------------------
             # 1. Single Phase
@@ -159,6 +182,9 @@ class PhaseDiagramPlotting3Phase:
             if not df_cs.empty:
                 # Calculate Ratios
                 df_cs["alpha_ratio"] = df_cs["n_alpha"] / df_cs["n_total"]
+                df_cs["alpha_ratio"] = df_cs["alpha_ratio"].fillna(0)
+                # Enforce minimum visible size for both core and shell for plotting
+                plot_alpha_ratio = df_cs["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 
                 # Colors
                 c_alpha = self._get_phase_colors(df_cs["PhaseAlpha"], "Alpha")
@@ -179,7 +205,7 @@ class PhaseDiagramPlotting3Phase:
 
                 # Layer 2: Inner Core (Alpha) - Scaled Size
                 # Size is area, so s_inner = s_total * ratio
-                s_inner = base_size * df_cs["alpha_ratio"]
+                s_inner = base_size * plot_alpha_ratio
                 plt.scatter(
                     df_cs["xB_total"], df_cs["T"],
                     c=c_alpha,
@@ -195,6 +221,9 @@ class PhaseDiagramPlotting3Phase:
             df_janus = subset[subset["Geometry"] == "Janus"].copy()
             if not df_janus.empty:
                 df_janus["alpha_ratio"] = df_janus["n_alpha"] / df_janus["n_total"]
+                
+                # Enforce minimum visible size for both phases for plotting
+                plot_alpha_ratio = df_janus["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 
                 c_alpha = self._get_phase_colors(df_janus["PhaseAlpha"], "Alpha")
                 c_beta = self._get_phase_colors(df_janus["PhaseBeta"], "Beta")
@@ -212,7 +241,7 @@ class PhaseDiagramPlotting3Phase:
 
                 # Layer 2: Foreground (Alpha) - Segment Marker
                 # Bin ratios to avoid creating unique markers for every point
-                df_janus["ratio_bin"] = (df_janus["alpha_ratio"] * 20).round() / 20 # Nearest 0.05
+                df_janus["ratio_bin"] = (plot_alpha_ratio * 20).round() / 20 # Nearest 0.05
                 
                 for ratio in df_janus["ratio_bin"].unique():
                     mask = df_janus["ratio_bin"] == ratio

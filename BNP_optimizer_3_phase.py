@@ -151,32 +151,96 @@ class BNPOptimizer3Phase:
             # Optimize: A_ratio, B_ratio
             bounds = [(eps, 1.0 - eps), (eps, 1.0 - eps)]
 
-        # Use multiple initial guesses to increase the chance of finding the global minimum.
-        base_guesses = [
-            initial_guess,
-            [0.1, 0.1], [0.9, 0.9], [0.1, 0.9], [0.9, 0.1], [0.5, 0.5]
-        ]
+# --- REPLACEMENT BLOCK START ---
+
+        # 1. EXPANDED GUESS LIST ("The Map")
+        # We categorize guesses to ensure we check different "regions" of the map.
         
-        initial_guesses = []
-        if has_skin:
-            # Use xB_total as the guess for xB_skin
-            for bg in base_guesses:
-                initial_guesses.append(list(bg) + [xB_total])
-        else:
-            initial_guesses = base_guesses
+        # Region A: The "Middle" (Deep mixing)
+        center_guesses = [
+            initial_guess,
+            [0.1, 0.1], [0.9, 0.9], [0.5, 0.5],
+            [0.2, 0.8], [0.8, 0.2]
+        ]
 
-        # Remove duplicates by converting to a set of tuples and back.
-        initial_guesses = [list(x) for x in set(tuple(x) for x in initial_guesses)]
+        # Region B: The "Edges" (Solubility Limits & Purity)
+        # We add 0.995 and 0.999 to catch very narrow solubility limits (The Creep Fix)
+        edge_guesses = [
+            [0.99, 0.01], [0.01, 0.99], 
+            [0.995, 0.005], [0.005, 0.995],  # Finer
+            [0.999, 0.001], [0.001, 0.999],  # Ultra-Fine
+            [0.95, 0.05], [0.05, 0.95],
+            [0.90, 0.10], [0.10, 0.90]
+        ]
 
+        # Prepare full lists with skin handling
+        def prepare_guesses(base_list):
+            g_list = []
+            if has_skin:
+                for bg in base_list:
+                    g_list.append(list(bg) + [xB_total])
+            else:
+                g_list = base_list
+            # Remove duplicates
+            return [list(x) for x in set(tuple(x) for x in g_list)]
+
+        center_candidates = prepare_guesses(center_guesses)
+        edge_candidates = prepare_guesses(edge_guesses)
+        
+        # 2. THE SCOUT (Stratified)
+        # We scout both lists separately to find the champion of each region.
+        
+        def scout_list(candidate_list):
+            results = []
+            for guess in candidate_list:
+                try:
+                    energy = objective(guess)
+                    if not np.isnan(energy) and energy != 1.0:
+                        results.append((energy, guess))
+                except:
+                    continue
+            results.sort(key=lambda x: x[0])
+            return results
+
+        scouted_center = scout_list(center_candidates)
+        scouted_edge = scout_list(edge_candidates)
+
+        # 3. PICK THE SNIPER TARGETS (The Strategy)
+        # We force diversity: Pick Best Center + Best Edge + Best Overall Remaining
+        best_starts = []
+
+        # A. Must include the best "Edge" case (Fixes the creep by forcing a check)
+        if scouted_edge:
+            best_starts.append(scouted_edge.pop(0)[1])
+        
+        # B. Must include the best "Center" case
+        if scouted_center:
+            best_starts.append(scouted_center.pop(0)[1])
+
+        # C. Fill the last slot with the next best option from EITHER list
+        remaining = scouted_center + scouted_edge
+        remaining.sort(key=lambda x: x[0])
+        
+        if remaining:
+             best_starts.append(remaining[0][1])
+
+        # If we somehow have nothing (math failure everywhere), default to initial_guess
+        if not best_starts:
+            best_starts = [list(initial_guess) + ([xB_total] if has_skin else [])]
+
+        # 4. THE SNIPER (Full Minimization)
         best_g_per_mole = float('inf')
         best_ratios = None
 
-        for guess in initial_guesses:
-            sol = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons)
+        for guess in best_starts:
+            # Tighter tolerance (tol=1e-8) prevents stopping "good enough" in the wrong valley
+            sol = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons, tol=1e-8)
 
             if sol.success and sol.fun < best_g_per_mole:
                 best_g_per_mole = sol.fun
                 best_ratios = sol.x
+
+        # --- REPLACEMENT BLOCK END ---
 
         if best_ratios is None:
             # This indicates that the optimization failed for all initial guesses.
