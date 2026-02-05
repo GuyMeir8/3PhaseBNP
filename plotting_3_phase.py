@@ -374,14 +374,14 @@ class PhaseDiagramPlotting3Phase:
                 # Enforce minimum visible size for both phases for plotting
                 plot_alpha_ratio = df_janus["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 
-                # c_alpha = self._get_phase_colors(df_janus["PhaseAlpha"], "Alpha")
-                # c_beta = self._get_phase_colors(df_janus["PhaseBeta"], "Beta")
+                c_alpha = self._get_phase_colors(df_janus["PhaseAlpha"], "Alpha")
+                c_beta = self._get_phase_colors(df_janus["PhaseBeta"], "Beta")
                 edge_colors, line_widths = self._get_skin_styles(df_janus)
 
                 # Layer 1: Background (Beta) - Full Circle
                 plt.scatter(
                     df_janus["xB_total"], df_janus["T"],
-                    c="black",
+                    c=c_beta,
                     edgecolors=edge_colors,
                     linewidths=line_widths,
                     s=base_size,
@@ -400,7 +400,7 @@ class PhaseDiagramPlotting3Phase:
                     
                     plt.scatter(
                         chunk["xB_total"], chunk["T"],
-                        c="black",
+                        c=c_alpha[mask],
                         edgecolors='none',
                         s=base_size, # Marker is unit circle, scales to base_size
                         marker=marker_verts,
@@ -428,7 +428,7 @@ class PhaseDiagramPlotting3Phase:
                 Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)',
                        markerfacecolor='white', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=0.5, markersize=10),
                 Line2D([0], [0], marker=self._create_segment_marker(0.3), color='w', label='Janus: Alpha (Segment) / Beta (Back)',
-                       markerfacecolor='black', markeredgecolor='black', markersize=12),
+                       markerfacecolor='gray', markeredgecolor='black', markersize=12),
             ]
             
             plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), title="Legend")
