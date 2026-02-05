@@ -11,6 +11,7 @@ from configurations_3_phase import ThreePhaseConfiguration, low_res_configuratio
 from system_data import SystemData
 from BNP_optimizer_3_phase import BNPOptimizer3Phase, OptimizationResult3Phase
 from BNP_Gibbs_en_calc_3_phase import GibbsEnergyCalculator3Phase
+from plotting_3_phase import PhaseDiagramPlotting3Phase
 
 def _calculate_single_phase_energy(
     system_data: SystemData,
@@ -164,7 +165,8 @@ class BNPSeriesProcessor:
                         for phases in phase_pairs:
                             # Skip Liquid-Liquid
                             if phases[0] == "Liquid" and phases[1] == "Liquid":
-                                continue
+                                if geo == "Janus":
+                                    continue
 
                             for has_skin in skin_options:
                                 
@@ -189,6 +191,7 @@ class BNPSeriesProcessor:
     def run(self, n_jobs: int = -1):
         """
         Runs the parallel processing over the configuration grid.
+        Automatically saves results to Results/ folder and opens the generated plots.
         """
         # 1. Generate Tasks
         print("Generating tasks...")
@@ -233,6 +236,13 @@ class BNPSeriesProcessor:
         
         df.to_csv(filepath, index=False)
         print(f"Results saved to {filepath}")
+        
+        # 4. Automatically Open and Display Plots
+        print("Generating and displaying phase diagrams...")
+        try:
+            PhaseDiagramPlotting3Phase(filepath, save_dir=output_dir, timestamp=timestamp)
+        except Exception as e:
+            print(f"Warning: Could not open plots. Error: {e}")
 
 if __name__ == "__main__":
     # Select Configuration

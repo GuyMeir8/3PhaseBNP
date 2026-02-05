@@ -153,92 +153,63 @@ class BNPOptimizer3Phase:
 
 # --- REPLACEMENT BLOCK START ---
 
-        # 1. EXPANDED GUESS LIST ("The Map")
-        # We categorize guesses to ensure we check different "regions" of the map.
+        # 1. EXPANDED AND ENHANCED GUESS LIST
+        # For better boundary exploration and local minima avoidance
         
-        # Region A: The "Middle" (Deep mixing)
-        center_guesses = [
-            initial_guess,
+        guesses = [
+            # Center region (deep mixing)
             [0.1, 0.1], [0.9, 0.9], [0.5, 0.5],
-            [0.2, 0.8], [0.8, 0.2]
-        ]
-
-        # Region B: The "Edges" (Solubility Limits & Purity)
-        # We add 0.995 and 0.999 to catch very narrow solubility limits (The Creep Fix)
-        edge_guesses = [
-            [0.99, 0.01], [0.01, 0.99], 
-            [0.995, 0.005], [0.005, 0.995],  # Finer
-            [0.999, 0.001], [0.001, 0.999],  # Ultra-Fine
+            [0.2, 0.8], [0.8, 0.2],
+            [0.3, 0.7], [0.7, 0.3],
+            [0.4, 0.6], [0.6, 0.4],
+            
+            # Edge region - Solubility limits (very asymmetric)
+            [0.99, 0.01], [0.01, 0.99],
+            [0.995, 0.005], [0.005, 0.995],
+            [0.999, 0.001], [0.001, 0.999],
+            
+            # Near-edge but not extreme
             [0.95, 0.05], [0.05, 0.95],
-            [0.90, 0.10], [0.10, 0.90]
+            [0.90, 0.10], [0.10, 0.90],
+            [0.85, 0.15], [0.15, 0.85],
+            
+            # Initial guess from caller
+            initial_guess,
         ]
 
-        # Prepare full lists with skin handling
-        def prepare_guesses(base_list):
-            g_list = []
-            if has_skin:
-                for bg in base_list:
-                    g_list.append(list(bg) + [xB_total])
-            else:
-                g_list = base_list
-            # Remove duplicates
-            return [list(x) for x in set(tuple(x) for x in g_list)]
-
-        center_candidates = prepare_guesses(center_guesses)
-        edge_candidates = prepare_guesses(edge_guesses)
+        # Prepare guesses with skin handling and remove duplicates
+        if has_skin:
+            prepared_guesses = [list(g) + [xB_total] for g in guesses]
+        else:
+            prepared_guesses = guesses
         
-        # 2. THE SCOUT (Stratified)
-        # We scout both lists separately to find the champion of each region.
-        
-        def scout_list(candidate_list):
-            results = []
-            for guess in candidate_list:
-                try:
-                    energy = objective(guess)
-                    if not np.isnan(energy) and energy != 1.0:
-                        results.append((energy, guess))
-                except:
-                    continue
-            results.sort(key=lambda x: x[0])
-            return results
+        # Remove duplicates while preserving order
+        seen = set()
+        prepared_guesses = [x for x in prepared_guesses if not (tuple(x) in seen or seen.add(tuple(x)))]
 
-        scouted_center = scout_list(center_candidates)
-        scouted_edge = scout_list(edge_candidates)
-
-        # 3. PICK THE SNIPER TARGETS (The Strategy)
-        # We force diversity: Pick Best Center + Best Edge + Best Overall Remaining
-        best_starts = []
-
-        # A. Must include the best "Edge" case (Fixes the creep by forcing a check)
-        if scouted_edge:
-            best_starts.append(scouted_edge.pop(0)[1])
-        
-        # B. Must include the best "Center" case
-        if scouted_center:
-            best_starts.append(scouted_center.pop(0)[1])
-
-        # C. Fill the last slot with the next best option from EITHER list
-        remaining = scouted_center + scouted_edge
-        remaining.sort(key=lambda x: x[0])
-        
-        if remaining:
-             best_starts.append(remaining[0][1])
-
-        # If we somehow have nothing (math failure everywhere), default to initial_guess
-        if not best_starts:
-            best_starts = [list(initial_guess) + ([xB_total] if has_skin else [])]
-
-        # 4. THE SNIPER (Full Minimization)
+        # 2. TRY ALL GUESSES (no stratified filtering)
+        # This is more robust for finding global minima on phase boundaries
         best_g_per_mole = float('inf')
         best_ratios = None
 
-        for guess in best_starts:
-            # Tighter tolerance (tol=1e-8) prevents stopping "good enough" in the wrong valley
-            sol = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons, tol=1e-8)
+        for guess in prepared_guesses:
+            try:
+                # Use trust-constr for Core-Shell with constraints, SLSQP for Janus without
+                if not cons:  # Janus case (no constraints)
+                    sol = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, tol=1e-10)
+                else:  # Core-Shell case (has constraints)
+                    sol = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons, tol=1e-10)
 
-            if sol.success and sol.fun < best_g_per_mole:
-                best_g_per_mole = sol.fun
-                best_ratios = sol.x
+                if sol.success and sol.fun < best_g_per_mole:
+                    # Verify constraint satisfaction for Core-Shell (SLSQP can be loose)
+                    if geometry_type == "Core_Shell":
+                        if shell_thickness_constraint(sol.x) < -1e-6:
+                            continue
+
+                    best_g_per_mole = sol.fun
+                    best_ratios = sol.x
+            except:
+                continue
 
         # --- REPLACEMENT BLOCK END ---
 
@@ -277,9 +248,14 @@ class BNPOptimizer3Phase:
             xB_alpha = x_mp[1, 0]
             xB_beta = x_mp[1, 1]
             r_vals_list = r_vals.tolist()
+            # The optimizer worked with G/n_total, so scale it back up for the final result.
+            G_min = best_g_per_mole * n_total
         except ValueError:
             n_alpha, n_beta, xB_alpha, xB_beta = float('nan'), float('nan'), float('nan'), float('nan')
             r_vals_list = []
+            # If the final geometry calculation fails, this result is invalid.
+            # Set G_min to infinity so it is never chosen as the minimum.
+            G_min = float('inf')
 
         # The optimizer worked with G/n_total, so we scale it back up for the final result.
         G_min = best_g_per_mole * n_total

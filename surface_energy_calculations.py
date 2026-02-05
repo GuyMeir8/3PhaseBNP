@@ -12,8 +12,7 @@ class SurfaceEnergyValues:
                         'FCC' : lambda T : 0.35,
                         'Liquid' : lambda T : 0.275
                     },
-                    # 'Vacuum' : lambda T : 1.675 - 0.47e-3*T
-                    'Vacuum': lambda T:2.158512 - 0.4e-3*T
+                    'Vacuum' : lambda T : 1.675 - 0.47e-3*T
                 },
                 'Liquid' : { # Liquid Ag
                     'Ag' : {
@@ -24,8 +23,7 @@ class SurfaceEnergyValues:
                         'FCC': lambda T: 0.275,
                         'Liquid': lambda T: 0.025
                     },
-                    # 'Vacuum' : lambda T : 1e-3*(1207-0.228*T)
-                    'Vacuum': lambda T: 1e-3*(1207-0.228*T)
+                    'Vacuum' : lambda T : 1e-3*(1207-0.228*T)
                 }
 
             },
@@ -39,7 +37,6 @@ class SurfaceEnergyValues:
                         'FCC': lambda T: 0.6,
                         'Liquid': lambda T: 0.225
                     },
-                    # 'Vacuum' : lambda T : 2.158512 - 0.4e-3*T
                     'Vacuum': lambda T: 2.158512 - 0.4e-3*T
                 },
                 'Liquid': { # Liquid Cu
@@ -51,8 +48,7 @@ class SurfaceEnergyValues:
                         'FCC': lambda T: 0.225,
                         'Liquid': lambda T: 0.025
                     },
-                    # 'Vacuum' : lambda T : 1e-3*(1585-0.211*T)
-                    'Vacuum': lambda T: 1e-3*(1207-0.228*T)
+                    'Vacuum' : lambda T : 1e-3*(1585-0.211*T)
                 }
             }
         }
