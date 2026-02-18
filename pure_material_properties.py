@@ -68,3 +68,26 @@ class CuData(BaseMaterial):
             )
         }
         self.atomic_radius = 135e-12
+
+
+class NiData(BaseMaterial):
+    def __init__(self):
+        super().__init__()
+        self.name = "Ni"
+        self.phase_names = ['FCC','Liquid']
+        self.phases = {
+            'FCC' : PhaseData(
+                g0= lambda T: (
+                        -5179.159 + 117.854 * T - 22.096 * T * log(T) - 4.8407E-3 * T**2 
+                if T <  1728 else
+               -27840.620 + 279.134977 * T - 43.1 * T * log(T) + 1127.54E28 * (T**-9)),
+                v= lambda T: 6.6e-6,
+            ),
+            'Liquid' : PhaseData(
+                g0= lambda T : 11235.527 + 108.457 * T - 22.096 * T * log(T) - 4.8407E-3 * T**2 - 382.318E-23 * T**7  
+                if T < 1728 else
+                -9549.817 + 268.597977 * T - 43.1 * T * log(T) ,
+                v= lambda T : 5.85e-6 + 9.02e-10*T,
+            )
+        }
+        self.atomic_radius = 124e-12       

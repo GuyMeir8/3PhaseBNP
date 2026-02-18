@@ -43,3 +43,28 @@ class AgCuData(BaseInteraction):
                 ]
             )
         }
+
+
+class CuNiData(BaseInteraction):
+    def __init__(self):
+        super().__init__()
+        self.name = "CuNi"
+        self.phase_names = ['FCC', 'Liquid']
+        self.phases = {
+            'FCC' : InteractionPhaseData(
+                Li= [
+                    lambda T: 8047.72 + 3.42217*T,
+                    lambda T: -2041.3 + 0.99714*T,
+                    lambda T: 0,
+                    lambda T: 0
+                ]
+            ),
+            'Liquid' : InteractionPhaseData(
+                Li= [
+                    lambda T: 12048.61 + 1.29093*T,
+                    lambda T: -1861.61 + 0.94201*T,
+                    lambda T: 0,
+                    lambda T: 0
+                ]
+            )
+        }

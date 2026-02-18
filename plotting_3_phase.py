@@ -11,10 +11,13 @@ import os
 import datetime
 
 class PhaseDiagramPlotting3Phase:
-    def __init__(self, file_name, save_dir=None, timestamp=None):
+    def __init__(self, file_name, save_dir=None, timestamp=None, plot_title_suffix="", auto_show=True):
         # save_dir: optional directory to save figures to. If None, figures are only displayed.
         # timestamp: optional timestamp string to include in saved filenames
         
+        self.auto_show = auto_show
+        self.plot_title_suffix = plot_title_suffix
+        self.file_name = file_name
         if save_dir is None:
             self.save_dir = "Results"
         else:
@@ -296,7 +299,7 @@ class PhaseDiagramPlotting3Phase:
             subset = df_plot[df_plot["n_total"] == n]
             if subset.empty: continue
             
-            plt.figure(figsize=(12, 8))
+            fig = plt.figure(figsize=(12, 8))
             base_size = 35
             MIN_VISIBLE_RATIO = 0.2 # Ensures a phase takes up at least 20% of the marker area
 
@@ -407,7 +410,13 @@ class PhaseDiagramPlotting3Phase:
                         label="Janus" if ratio == df_janus["ratio_bin"].unique()[0] else ""
                     )
 
-            plt.title(f"Phase Diagram (n={n:.1e})")
+            title = f"Phase Diagram (n={n:.1e})"
+            if self.plot_title_suffix:
+                title += f" {self.plot_title_suffix}"
+            plt.title(title)
+            if self.plot_title_suffix:
+                title += f" {self.plot_title_suffix}"
+            plt.title(title)
             plt.xlabel("xB_total (Composition)")
             plt.ylabel("Temperature [K]")
             
@@ -438,15 +447,19 @@ class PhaseDiagramPlotting3Phase:
             if self.save_dir:
                 if not os.path.exists(self.save_dir):
                     os.makedirs(self.save_dir)
-                if self.timestamp:
-                    filename = f"PhaseDiagram_n{n:.1e}_{self.timestamp}.png"
-                else:
-                    filename = f"PhaseDiagram_n{n:.1e}.png"
+                
+                # Use the input CSV filename as the base for the plot filename
+                base_name = os.path.splitext(os.path.basename(self.file_name))[0]
+                filename = f"{base_name}_n{n:.1e}.png"
+                
                 filepath = os.path.join(self.save_dir, filename)
                 plt.savefig(filepath, dpi=150, bbox_inches='tight')
             
-            plt.show()
-
+            if self.auto_show:
+                plt.show()
+            else:
+                plt.close(fig)
+                
     def _get_phase_colors(self, phase_series, role):
         # role is "Alpha" or "Beta"
         return phase_series.map({

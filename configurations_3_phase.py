@@ -30,6 +30,9 @@ class ThreePhaseConfiguration:
     # Example: { ("Ag", "FCC", "Cu", "Liquid"): 0.15 }
     surface_energy_overrides: Dict[Tuple[str, ...], Union[float, Callable[..., float]]] = field(default_factory=dict)
 
+    # Plotting Metadata
+    plot_title_suffix: str = ""
+
     # Simulation Grid
     xb_step: float = 0.01
     t_min: float = 400.0

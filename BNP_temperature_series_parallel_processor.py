@@ -188,7 +188,7 @@ class BNPSeriesProcessor:
                                 })
         return tasks
 
-    def run(self, n_jobs: int = -1):
+    def run(self, n_jobs: int = -1, auto_show: bool = True):
         """
         Runs the parallel processing over the configuration grid.
         Automatically saves results to Results/ folder and opens the generated plots.
@@ -240,7 +240,7 @@ class BNPSeriesProcessor:
         # 4. Automatically Open and Display Plots
         print("Generating and displaying phase diagrams...")
         try:
-            PhaseDiagramPlotting3Phase(filepath, save_dir=output_dir, timestamp=timestamp)
+            PhaseDiagramPlotting3Phase(filepath, save_dir=output_dir, timestamp=timestamp, plot_title_suffix=self.config.plot_title_suffix, auto_show=auto_show)
         except Exception as e:
             print(f"Warning: Could not open plots. Error: {e}")
 
