@@ -26,7 +26,6 @@ class AgCuData(BaseInteraction):
     def __init__(self):
         super().__init__()
         self.names = frozenset(("Ag", "Cu"))
-        self.phase_names = ['FCC', 'Liquid']
         self.phases = {
             'FCC' : InteractionPhaseData(
                 Li= [

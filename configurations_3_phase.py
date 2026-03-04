@@ -24,7 +24,7 @@ class ThreePhaseConfiguration:
     # System Definition
     materials: Tuple[str, str] = ("Ag", "Cu") # Material A, Material B
     phases: Tuple[str, ...] = ("FCC", "Liquid")
-    geometries: Tuple[str, ...] = ("Core_Shell", "Janus")
+    geometries: Tuple[str, ...] = ("Core Shell", "Janus")
 
     # Simulation Grid
     xb_step: float = 0.01
