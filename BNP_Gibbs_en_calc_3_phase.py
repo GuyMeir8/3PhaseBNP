@@ -250,7 +250,7 @@ class GibbsEnergyCalculator3Phase:
         def cos_theta_update(cos_theta_alpha):
             return V_ratio *((2 - cos_theta_alpha) * (1+cos_theta_alpha) ** 2 ) / ((1 - cos_theta_alpha) ** 2)  - 2
         
-        max_iterations = 100
+        max_iterations = 500
         cos_theta_alpha, num_iterations = self._generic_iterative_loop_one_variable(
             initial_guess=0.45,
             update_function=cos_theta_update,
@@ -295,7 +295,7 @@ class GibbsEnergyCalculator3Phase:
             initial_guess: float,
             update_function: Callable[[float], float],
             tol: float = 1e-6,
-            max_iterations: int = 100,
+            max_iterations: int = 500,
     ) -> Tuple[float, int]:
 
         var_current = initial_guess
@@ -352,8 +352,9 @@ class GibbsEnergyCalculator3Phase:
                 x_A_i_prev = 1 - xB_i_prev
                 dS_i_prev = R*T*log(x_A_i_prev)/omega_A
                 dG_i = dG_A_i/omega_A - dG_B_i/omega_B
-                return exp( (omega_B / (R*T)) * (d_const + dS_i_prev + dG_i) )
-            max_iterations = 100
+                return np.clip(exp( (omega_B / (R*T)) * (d_const + dS_i_prev + dG_i) ), 1e-9, 1.0 - 1e-9)
+
+            max_iterations = 500
             xB_i, num_iterations = self._generic_iterative_loop_one_variable(
                 initial_guess=xB,
                 update_function=update_xB_i,
@@ -390,8 +391,8 @@ class GibbsEnergyCalculator3Phase:
                 def update_xB_i(xB_i_prev):
                     dS = (R*T/omega_A_incoherent)*log(1-xB_i_prev)
                     dG_Ex = L_0_FCC*k_incoherent*(xB_i_prev**2/omega_A_incoherent - (1-xB_i_prev)**2/omega_B_incoherent)
-                    return exp((omega_B_incoherent/(R*T))*(d_const+dS+dG_Ex))
-                max_iterations = 100
+                    return np.clip(exp((omega_B_incoherent/(R*T))*(d_const+dS+dG_Ex)), 1e-9, 1.0 - 1e-9)
+                max_iterations = 500
                 xB_i, num_iterations = self._generic_iterative_loop_one_variable(
                     initial_guess=0.5*(xB_alpha + xB_beta),
                     update_function=update_xB_i,
@@ -406,7 +407,7 @@ class GibbsEnergyCalculator3Phase:
             def _calculate_coherent_solid_solid():
                 k = 1.0
                 f = 1.09
-                omega_coherent = _calculate_omega_for_surface_tension(T_dependent_parameters.st_mp[0, phases.index(phase_alpha)], f)
+                omega_coherent = _calculate_omega_for_surface_tension(T_dependent_parameters.v_mp[0, phases.index(phase_alpha)], f)
                 L_0_alpha = T_dependent_parameters.L_ip[phase_alpha][0]
                 L_0_beta = T_dependent_parameters.L_ip[phase_beta][0]
                 L_ave = 0.5*(L_0_alpha + L_0_beta)
@@ -414,8 +415,8 @@ class GibbsEnergyCalculator3Phase:
                 dEx_const = L_0_alpha*(1 - 2*xB_alpha)
                 d_const = dS_const + dEx_const
                 def update_xB_i(xB_i_prev):
-                    return exp(d_const/(R*T) + log(1-xB_i_prev) + (L_ave/(R*T))*(2*xB_i_prev - 1))
-                max_iterations = 100
+                    return np.clip(exp(d_const/(R*T) + log(1-xB_i_prev) + (L_ave/(R*T))*(2*xB_i_prev - 1)), 1e-9, 1.0 - 1e-9)
+                max_iterations = 500
                 xB_i, num_iterations = self._generic_iterative_loop_one_variable(
                     initial_guess=0.5*(xB_alpha + xB_beta),
                     update_function=update_xB_i,
@@ -435,14 +436,17 @@ class GibbsEnergyCalculator3Phase:
             R = 8.31446261815324
             xB = xB_alpha
             L_0 = T_dependent_parameters.L_ip[phase_alpha][0]
+            min_st_val = 1e-2
+            if L_0<0 or T>(L_0/(2*R)): return min_st_val 
+            
             dS_const = R*T*(log(xB_alpha)/omega_B - log(1-xB_alpha)/omega_A)
             dEx_const = L_0*(((1-xB_alpha)**2)/omega_B + (xB_alpha**2)/omega_A)
             d_const = dS_const + dEx_const
             def _update_xB_i(xB_i_prev):
                 dS_i = R*T*log(1-xB_i_prev)/omega_A
                 dEx_i = L_0*(xB_i_prev**2/omega_A - (1-xB_i_prev)**2/omega_B)
-                return exp((omega_B/(R*T))*(dS_i + dEx_i + d_const))
-            max_iterations = 100
+                return np.clip(exp((omega_B/(R*T))*(dS_i + dEx_i + d_const)), 1e-9, 1.0 - 1e-9)
+            max_iterations = 500
             xB_i, num_iterations = self._generic_iterative_loop_one_variable(
                 initial_guess=(xB_alpha + xB_beta)/2,
                 update_function=_update_xB_i,
@@ -454,7 +458,9 @@ class GibbsEnergyCalculator3Phase:
             st_chem = st_chem_calc(L_0, T)
             st_en = 2.9*T*(1/omega_A + 1/omega_B)
             st_chem_0 = st_chem_calc(self.interaction_data.phases["Liquid"].Li[0](0), 0) # type: ignore
-            return st_chem*(1 + st_en/st_chem_0)
+            st_final = st_chem*(1 + st_en/st_chem_0) 
+            if st_final < min_st_val : return min_st_val 
+            return st_final
 
         def _calculate_surface_tension_solid_to_liquid(xB_solid, xB_liquid, phase_solid, phase_liquid="Liquid"):
             k = 0.9738
@@ -476,8 +482,8 @@ class GibbsEnergyCalculator3Phase:
                 dG_B_i = _calculate_G_excess_for_surface_tension_different_phases_interface(xB_i_prev, k, phase_solid, phase_liquid, is_dG_A=False)
                 dG_i = dG_A_i/omega_A - dG_B_i/omega_B
                 dS_i_prev = R*T*log(1-xB_i_prev)/omega_A
-                return exp((d_const + dS_i_prev + dG_i) * (omega_B / (R * T)))
-            max_iterations = 100
+                return np.clip(exp((d_const + dS_i_prev + dG_i) * (omega_B / (R * T))), 1e-9, 1.0 - 1e-9)
+            max_iterations = 500
             xB_i, num_iterations = self._generic_iterative_loop_one_variable(
                 initial_guess=0.5*(xB_solid + xB_liquid),
                 update_function=update_xB_i,
