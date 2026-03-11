@@ -1,5 +1,5 @@
 from configurations_3_phase import low_res_configuration
-from BNP_Gibbs_en_calc_3_phase import GibbsEnergyCalculator3Phase
+from BNP_Gibbs_en_calc_3_phase import GibbsEnergyCalculator3Phase, skin_class
 import numpy as np
 
 if __name__ == "__main__":
@@ -69,3 +69,46 @@ if __name__ == "__main__":
                 print(f"    ST(FCC xB={xB_s1:.2f} -> FCC xB={xB_s2:.2f}) @ {T}K: {st_ss:.4f} J/m^2")
             except Exception as e:
                 print(f"    ST(FCC xB={xB_s1:.2f} -> FCC xB={xB_s2:.2f}) @ {T}K: FAILED - {e}")
+
+        # 6. Janus Geometry Tests
+        print("\n  5. Janus Geometry Tests (n_total=1e-18):")
+        n_test = 1e-18
+        
+        # Scenario A: Liquid-Liquid (Approximate complete separation 50/50)
+        # Ag in Phase 1 (Alpha), Cu in Phase 2 (Beta)
+        n_mp_A = np.array([[0.4*n_test, 0.1*n_test], [0.1*n_test, 0.4*n_test]]) 
+        x_mp_A = np.array([[0.8, 0.2], [0.2, 0.8]])
+        phases_A = ("Liquid", "Liquid")
+        
+        try:
+            vars_A = calculator._get_T_dependent_vars(T, phases_A)
+            skin_none = skin_class(None)
+            
+            # Calculate both to compare
+            r_spheric = calculator._calculate_spheric_Janus_geo(n_mp_A, vars_A)
+            r_actual = calculator._calc_Janus_geometry_for_known_nx(n_mp_A, x_mp_A, phases_A, T, vars_A, skin_none)
+            
+            sol_type = "Spheric Janus" if np.allclose(r_actual, r_spheric, rtol=1e-4) else "Regular Janus (Force Balanced)"
+            print(f"    Liquid(Ag) / Liquid(Cu) @ {T}K: {sol_type}")
+            print(f"      Output: r_alpha={r_actual[0]:.2e}, r_beta={r_actual[1]:.2e}, cos_theta={r_actual[2]:.4f}")
+            
+        except Exception as e:
+            print(f"    Liquid(Ag) / Liquid(Cu) @ {T}K: FAILED - {e}")
+            
+        # Scenario B: FCC-FCC (Approximate complete separation 50/50)
+        n_mp_B = np.array([[0.4*n_test, 0.1*n_test], [0.1*n_test, 0.4*n_test]]) 
+        x_mp_B = np.array([[0.8, 0.2], [0.2, 0.8]])
+        phases_B = ("FCC", "FCC")
+        
+        try:
+            vars_B = calculator._get_T_dependent_vars(T, phases_B)
+            skin_none = skin_class(None)
+            
+            r_spheric = calculator._calculate_spheric_Janus_geo(n_mp_B, vars_B)
+            r_actual = calculator._calc_Janus_geometry_for_known_nx(n_mp_B, x_mp_B, phases_B, T, vars_B, skin_none)
+            
+            sol_type = "Spheric Janus" if np.allclose(r_actual, r_spheric, rtol=1e-4) else "Regular Janus (Force Balanced)"
+            print(f"    FCC(Ag) / FCC(Cu) @ {T}K: {sol_type}")
+            print(f"      Output: r_alpha={r_actual[0]:.2e}, r_beta={r_actual[1]:.2e}, cos_theta={r_actual[2]:.4f}")
+        except Exception as e:
+             print(f"    FCC(Ag) / FCC(Cu) @ {T}K: FAILED - {e}")
