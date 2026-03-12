@@ -127,21 +127,168 @@ class GibbsEnergyCalculator3Phase:
                 T,
                 T_dependent_parameters
             )
-    #         x_mp = np.clip(x_mp, 1e-20, 1.0 - 1e-20)  # Prevent log(0) issues
-    #         G_ideal = self.calc_G_ideal(n_mp, x_mp, T, phases)
-    #         G_excess = self.calc_G_excess(n_mp, x_mp, T, phases)
-    #         G_surface = self.calc_G_surface(n_mp, x_mp, r_vals, T, phases, geometry_type, has_skin)
+            G_ideal = self._calc_G_ideal(n_mp, x_mp, T, phases)
+            G_excess = self._calc_G_excess(n_mp, x_mp, T, phases, T_dependent_parameters)
+            G_surface = self._calc_G_surface(x_mp, r_vals, T, phases, geometry_type, skin, T_dependent_parameters)
 
-    #         return G_ideal + G_excess + G_surface
-            print("n_mp:", n_mp)
-            print("x_mp:", x_mp)
-            print("r_vals:", r_vals)
+            return G_ideal + G_excess + G_surface # type: ignore
             
-            return 0.0
-
         except ValueError: # Anytime something returns "no solution"
             return 1.0
-        
+    
+    def _calc_G_surface(self, x_mp, r_vals, T, phases, geometry_type, skin, T_dependent_parameters):
+        A_Janus_out = lambda r, cos_theta : 2*np.pi*(r**2)*(1-cos_theta)
+        match (geometry_type, skin.exists):
+            case ("Janus", False):              
+                st_alpha_vac = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=None,
+                    phase_alpha=phases[0],
+                    phase_beta=None,
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                st_beta_vac = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,1],
+                    xB_beta=None,
+                    phase_alpha=phases[1],
+                    phase_beta=None,
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                st_alpha_beta = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=x_mp[1,1],
+                    phase_alpha=phases[0],
+                    phase_beta=phases[1],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                r_alpha = r_vals[0]
+                r_beta = r_vals[1]
+                r_interface = r_alpha*sqrt(1-r_vals[2]**2)
+                A_alpha_vac =A_Janus_out(r_alpha, r_vals[2])
+                cos_theta_beta = sqrt(1-(r_interface/r_beta)**2)
+                A_beta_out = A_Janus_out(r_beta, cos_theta_beta)
+                A_alpha_beta = np.pi*r_interface**2
+                return st_alpha_vac*A_alpha_vac + st_beta_vac*A_beta_out + st_alpha_beta*A_alpha_beta
+            
+            case ("Janus", True):
+                skin_thickness = self._calc_skin_thickness(skin)
+                r_alpha_no_skin = r_vals[0] - skin_thickness
+                r_beta_no_skin = r_vals[1] - skin_thickness
+                r_interface_alpha_beta = r_alpha_no_skin*sqrt(1-r_vals[2]**2)
+                st_alpha_skin = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=x_mp[1,2],
+                    phase_alpha=phases[0],
+                    phase_beta=phases[2],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                st_beta_skin = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,1],
+                    xB_beta=x_mp[1,2],
+                    phase_alpha=phases[1],
+                    phase_beta=phases[2],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                st_alpha_beta = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=x_mp[1,1],
+                    phase_alpha=phases[0],
+                    phase_beta=phases[1],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                A_alpha_skin = A_Janus_out(r_alpha_no_skin, r_vals[2])
+                cos_theta_beta = sqrt(1-(r_interface_alpha_beta/r_beta_no_skin)**2)
+                A_beta_skin = A_Janus_out(r_beta_no_skin, cos_theta_beta)
+                A_alpha_beta = np.pi*r_interface_alpha_beta**2
+                G_surf_alpha_skin = st_alpha_skin*A_alpha_skin
+                G_surf_beta_skin = st_beta_skin*A_beta_skin
+                G_surf_alpha_beta = st_alpha_beta*A_alpha_beta
+
+                A_skin = A_Janus_out(r_vals[0], r_vals[2]) + A_Janus_out(r_vals[1], cos_theta_beta)
+                st_skin_vac = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,2],
+                    xB_beta=None,
+                    phase_alpha=phases[2],
+                    phase_beta=None,
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                G_surf_skin_vac = A_skin*st_skin_vac
+                return G_surf_alpha_skin + G_surf_beta_skin + G_surf_alpha_beta + G_surf_skin_vac
+
+            case ("Core Shell", False):
+                A_alpha_beta = 4*np.pi*r_vals[0]**2
+                st_alpha_beta = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=x_mp[1,1],
+                    phase_alpha=phases[0],
+                    phase_beta=phases[1],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                A_beta_vac = 4*np.pi*r_vals[1]**2
+                st_beta_vac = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,1],
+                    xB_beta=None,
+                    phase_alpha=phases[1],
+                    phase_beta=None,
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                return st_alpha_beta*A_alpha_beta + st_beta_vac*A_beta_vac
+
+            case ("Core Shell", True):
+                A_alpha_beta = 4*np.pi*r_vals[0]**2
+                st_alpha_beta = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,0],
+                    xB_beta=x_mp[1,1],
+                    phase_alpha=phases[0],
+                    phase_beta=phases[1],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                A_beta_skin = 4*np.pi*r_vals[1]**2
+                st_beta_skin = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,1],
+                    xB_beta=x_mp[1,2],
+                    phase_alpha=phases[1],
+                    phase_beta=phases[2],
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+                A_skin_vac = 4*np.pi*r_vals[2]**2
+                st_skin_vac = self._calculate_surface_tension(
+                    xB_alpha=x_mp[1,2],
+                    xB_beta=None,
+                    phase_alpha=phases[2],
+                    phase_beta=None,
+                    T=T,
+                    phases=phases,
+                    T_dependent_parameters=T_dependent_parameters,
+                )
+
+                return st_alpha_beta*A_alpha_beta + st_beta_skin*A_beta_skin + st_skin_vac*A_skin_vac
+
+
+
+
     @staticmethod
     def _calc_generic_split(n_A_alpha, n_B_alpha, n_A_total, n_B_total) -> Tuple[np.ndarray, np.ndarray]:
         n_A_beta = n_A_total - n_A_alpha
@@ -243,7 +390,48 @@ class GibbsEnergyCalculator3Phase:
                 V_skin = V_w_skin - V_no_skin
                 n_skin = V_skin / v_skin
                 return n_skin
+    
+    def _calc_nx_after_skin_is_found(self, n_skin, skin, n_A_total, n_B_total, A_ratio_alpha, B_ratio_alpha, phases, geometry_type, T, T_dependent_parameters, skin_thickness):
+        n_A_skin = n_skin * (1 - skin.xB)
+        n_B_skin = n_skin * skin.xB
+
+        n_A_no_skin = n_A_total - n_A_skin
+        n_B_no_skin = n_B_total - n_B_skin
+        n_A_alpha = A_ratio_alpha * n_A_no_skin
+        n_B_alpha = B_ratio_alpha * n_B_no_skin
         
+        n_mp, x_mp = self._calc_generic_split(n_A_alpha, n_B_alpha, n_A_no_skin, n_B_no_skin)
+        
+        match geometry_type:
+            case "Janus":
+                r_vals = self._calc_Janus_geometry_for_known_nx(
+                    n_mp, x_mp, phases, T, T_dependent_parameters, skin
+                )
+                r_vals = np.array([
+                    r_vals[0] + skin_thickness,
+                    r_vals[1] + skin_thickness,
+                    r_vals[2]
+                ]) # Janus r_vals = Only values with skins
+
+            case "Core Shell":
+                r_vals = self._calc_core_shell_geometry_for_known_nx(
+                    n_mp, x_mp, phases, T_dependent_parameters
+                )
+                r_vals = np.array([
+                    r_vals[0],
+                    r_vals[1],
+                    r_vals[1] + skin_thickness
+                ]) # Core Shell r_vals - alpha, beta, everything
+        
+
+        n_skin_col = np.array([[n_A_skin], [n_B_skin]])
+        x_skin_col = np.array([[1 - skin.xB], [skin.xB]])
+        
+        n_mp = np.hstack((n_mp, n_skin_col))
+        x_mp = np.hstack((x_mp, x_skin_col))
+
+        return n_mp, x_mp, r_vals
+
     def _calc_mole_splits_and_geo(
             self,
             A_ratio_alpha: float, 
@@ -283,43 +471,7 @@ class GibbsEnergyCalculator3Phase:
             if not success:
                 raise ValueError("Mole split solver failed to converge.")
             
-            n_A_skin = n_skin * (1 - skin.xB)
-            n_B_skin = n_skin * skin.xB
-
-            n_A_no_skin = n_A_total - n_A_skin
-            n_B_no_skin = n_B_total - n_B_skin
-            n_A_alpha = A_ratio_alpha * n_A_no_skin
-            n_B_alpha = B_ratio_alpha * n_B_no_skin
-            
-            n_mp, x_mp = self._calc_generic_split(n_A_alpha, n_B_alpha, n_A_no_skin, n_B_no_skin)
-            
-            match geometry_type:
-                case "Janus":
-                    r_vals = self._calc_Janus_geometry_for_known_nx(
-                        n_mp, x_mp, phases, T, T_dependent_parameters, skin
-                    )
-                    r_vals = np.array([
-                        r_vals[0] + skin_thickness,
-                        r_vals[1] + skin_thickness,
-                        r_vals[2]
-                    ]) # Janus r_vals = Only values with skins
-
-                case "Core Shell":
-                    r_vals = self._calc_core_shell_geometry_for_known_nx(
-                        n_mp, x_mp, phases, T_dependent_parameters
-                    )
-                    r_vals = np.array([
-                        r_vals[0],
-                        r_vals[1],
-                        r_vals[1] + skin_thickness
-                    ]) # Core Shell r_vals - alpha, beta, everything
-            
-
-            n_skin_col = np.array([[n_A_skin], [n_B_skin]])
-            x_skin_col = np.array([[1 - skin.xB], [skin.xB]])
-            
-            n_mp = np.hstack((n_mp, n_skin_col))
-            x_mp = np.hstack((x_mp, x_skin_col))
+            n_mp, x_mp, r_vals = self._calc_nx_after_skin_is_found(n_skin, skin, n_A_total, n_B_total, A_ratio_alpha, B_ratio_alpha, phases, geometry_type, T, T_dependent_parameters, skin_thickness)
 
 
         else:
@@ -344,6 +496,7 @@ class GibbsEnergyCalculator3Phase:
                         phases,
                         T_dependent_parameters,
                     )
+        x_mp = np.clip(x_mp, self.eps, 1.0 - self.eps)
         return n_mp, x_mp, r_vals
 
     @staticmethod
@@ -493,6 +646,28 @@ class GibbsEnergyCalculator3Phase:
             g_ideal_phase = x_mp[:,phase_idx] * g_mp[:,phase_idx] + R * T * x_mp[:,phase_idx] * np.log(x_mp[:,phase_idx])
             G_ideal += n_phase * np.sum(g_ideal_phase)
         return G_ideal
+
+    def _calc_G_excess(
+            self,
+            n_mp: np.ndarray,
+            x_mp: np.ndarray,
+            T: float,
+            phases: Tuple[str, ...],
+            T_dependent_parameters: TemperatureDependentVars,
+    ) -> float:
+        """
+        Calculates the excess Gibbs free energy for the system.
+        """
+        G_excess = 0.0
+
+        for i, phase in enumerate(phases):
+            n_phase = np.sum(n_mp[:, i])
+            xA = x_mp[0, i]
+            xB = x_mp[1, i]
+            L_values = T_dependent_parameters.L_ip[phase]
+            interaction_sum = np.sum([L * ((xA - xB) ** k) for k, L in enumerate(L_values)])
+            G_excess += n_phase * xA * xB * interaction_sum
+        return G_excess
     
     def generic_iterative_loop_one_variable(
             self,
