@@ -56,7 +56,7 @@ standard_configuration = ThreePhaseConfiguration()
 low_res_configuration = ThreePhaseConfiguration(
     base_file_name="3Phase_LowRes",
     t_min = 500.0,
-    n_total_values=[1, 5e-17]
+    n_total_values=[1, 5e-17, 5e-19, 5e-21]
 )
 
 # 3. Debugging (Very fast, minimal points to check if code runs)
