@@ -60,7 +60,13 @@ class GibbsEnergyCalculator3Phase:
         return np.array(g_mp_rows)
 
     @staticmethod
-    def calc_r_from_V(V): return ((3 * V) / (4 * np.pi)) ** (1 / 3)
+    def calc_r_from_V(V): 
+        if V < 0 or np.isnan(V):
+            # Physical volume cannot be negative. This indicates an upstream logic error.
+            raise RuntimeError(f"calc_r_from_V received invalid Volume: {V}")
+        if V == 0:
+            return 0.0
+        return ((3 * V) / (4 * np.pi)) ** (1 / 3)
 
     def _get_v_mp(
             self,
@@ -353,6 +359,10 @@ class GibbsEnergyCalculator3Phase:
         
         n_A_no_skin = n_A_total - n_skin*(1-skin_data.xB)
         n_B_no_skin = n_B_total - n_skin*skin_data.xB
+
+        if n_A_no_skin < 0 or n_B_no_skin < 0:
+            return 1e9 # Return a large value to discourage the solver from this path
+
         n_A_alpha = A_ratio_alpha * n_A_no_skin
         n_B_alpha = B_ratio_alpha * n_B_no_skin
         n_mp, x_mp = self._calc_generic_split(n_A_alpha, n_B_alpha, n_A_no_skin, n_B_no_skin)
@@ -395,6 +405,10 @@ class GibbsEnergyCalculator3Phase:
 
         n_A_no_skin = n_A_total - n_A_skin
         n_B_no_skin = n_B_total - n_B_skin
+
+        if n_A_no_skin < 0 or n_B_no_skin < 0:
+            raise ValueError("Skin requires more material than available.")
+
         n_A_alpha = A_ratio_alpha * n_A_no_skin
         n_B_alpha = B_ratio_alpha * n_B_no_skin
         
@@ -574,7 +588,12 @@ class GibbsEnergyCalculator3Phase:
             if len(r2_i) == 0:
                 return [1/self.eps, 1/self.eps]
             
-            r2_val = r2_i[0]
+            # Pick the root that corresponds to a radius closest to the spheric approximation
+            # This prevents jumping to unphysical branches of the solution
+            target_r2 = (r_spheric[0] * sqrt(1 - r_spheric[2]**2))**2
+            best_idx = np.argmin(np.abs(r2_i - target_r2))
+            r2_val = r2_i[best_idx]
+            
             eq_def = lambda h, V : np.pi*h*(3*r2_val + h**2) / 6 - V
             eq_alpha = eq_def(h_alpha, V_alpha)
             eq_beta = eq_def(h_beta, V_beta)
@@ -592,8 +611,13 @@ class GibbsEnergyCalculator3Phase:
         if len(a_2_final) != 1: return r_spheric
         a_final = sqrt(a_2_final[0])
 
-        r_alpha = sqrt(h_alpha**2 + a_final**2)
-        r_beta = sqrt(h_beta**2 + a_final**2)
+        # Correct formula for Sphere Radius R given cap height h and base radius a:
+        # R = (h^2 + a^2) / (2h)
+        # Guard against h=0 to prevent division by zero
+        if h_alpha < self.eps or h_beta < self.eps: return r_spheric
+
+        r_alpha = (h_alpha**2 + a_final**2) / (2 * h_alpha)
+        r_beta = (h_beta**2 + a_final**2) / (2 * h_beta)
 
         # SANITY CHECK: If force-balance solver diverged to huge radii (flat interface) 
         # or returned NaNs, revert to the robust spheric approximation.
@@ -601,12 +625,23 @@ class GibbsEnergyCalculator3Phase:
             r_alpha > 10 * r_spheric[0] or r_beta > 10 * r_spheric[1]):
             return r_spheric
 
-        cos_theta_alpha = h_alpha / r_alpha
+        # Correct formula for cos(theta): h = R(1 - cos_theta) -> cos_theta = 1 - h/R
+        cos_theta_alpha = 1.0 - h_alpha / r_alpha
+        
         return np.array([r_alpha, r_beta, cos_theta_alpha])
 
     def _calculate_spheric_Janus_geo(self, n_mp, T_dependent_parameters):
         V_alpha = np.sum(n_mp[:,0] * T_dependent_parameters.v_mp[:,0])
         V_beta = np.sum(n_mp[:,1] * T_dependent_parameters.v_mp[:,1])
+
+        # Guard against negative volumes (unphysical input)
+        # Guard against negative volumes (unphysical input) which imply
+        # negative moles or invalid molar volumes from the database.
+        if V_alpha <= 0 or np.isnan(V_alpha):
+            raise RuntimeError(f"Invalid V_alpha in spheric Janus calc: {V_alpha}")
+        if V_beta <= 0 or np.isnan(V_beta):
+            raise RuntimeError(f"Invalid V_beta in spheric Janus calc: {V_beta}")
+
         V_ratio = V_alpha / V_beta
 
         # The volume ratio Q = V_alpha / V_beta for a spherical particle cut by a plane satisfies:
@@ -787,6 +822,11 @@ class GibbsEnergyCalculator3Phase:
 
     @staticmethod
     def _calculate_omega_for_surface_tension(v_i, f):
+        # Molar volume must be positive. A negative value here means the 
+        # database returned a negative volume for the given Temperature, 
+        # or the phase mixture logic is incorrect.
+        if v_i <= 0 or np.isnan(v_i):
+            raise RuntimeError(f"Invalid molar volume v_i: {v_i}")
         return f*(v_i**(2/3))*(6.02214e23)**(1/3)
 
     @staticmethod
@@ -814,6 +854,8 @@ class GibbsEnergyCalculator3Phase:
         d_const = dst_0 + dS_b + dG_b
 
         def update_xB_i(xB_i_prev):
+            # Guard against solver overshoot causing domain errors in log
+            xB_i_prev = np.clip(xB_i_prev, self.eps, 1.0 - self.eps)
             dG_A_i = self._calculate_G_excess_for_surface_tension_same_phase(xB_i_prev, k, phase, True, T_dependent_parameters)
             dG_B_i = self._calculate_G_excess_for_surface_tension_same_phase(xB_i_prev, k, phase, False, T_dependent_parameters)
             x_A_i_prev = 1 - xB_i_prev
@@ -855,6 +897,7 @@ class GibbsEnergyCalculator3Phase:
             B_const = st_B_solid_solid - (R*T/omega_B_incoherent) * log(xB_alpha) - L_0_FCC * (1 - xB_alpha)**2 / omega_B_incoherent
             d_const = A_const - B_const
             def update_xB_i(xB_i_prev):
+                xB_i_prev = np.clip(xB_i_prev, self.eps, 1.0 - self.eps)
                 dS = (R*T/omega_A_incoherent)*log(1-xB_i_prev)
                 dG_Ex = L_0_FCC*k_incoherent*(xB_i_prev**2/omega_A_incoherent - (1-xB_i_prev)**2/omega_B_incoherent)
                 return exp((omega_B_incoherent/(R*T))*(d_const+dS+dG_Ex))
@@ -880,6 +923,7 @@ class GibbsEnergyCalculator3Phase:
             dEx_const = L_0_alpha*(1 - 2*xB_alpha)
             d_const = dS_const + dEx_const
             def update_xB_i(xB_i_prev):
+                xB_i_prev = np.clip(xB_i_prev, self.eps, 1.0 - self.eps)
                 return exp(d_const/(R*T) + log(1-xB_i_prev) + (L_ave/(R*T))*(2*xB_i_prev - 1))
             xB_i, success = self.hybrid_solver_one_variable(
                 min_val=self.eps,
@@ -908,6 +952,7 @@ class GibbsEnergyCalculator3Phase:
         dEx_const = L_0*(((1-xB_alpha)**2)/omega_B + (xB_alpha**2)/omega_A)
         d_const = dS_const + dEx_const
         def _update_xB_i(xB_i_prev):
+            xB_i_prev = np.clip(xB_i_prev, self.eps, 1.0 - self.eps)
             dS_i = R*T*log(1-xB_i_prev)/omega_A
             dEx_i = L_0*(xB_i_prev**2/omega_A - (1-xB_i_prev)**2/omega_B)
             return exp((omega_B/(R*T))*(dS_i + dEx_i + d_const))
@@ -943,6 +988,7 @@ class GibbsEnergyCalculator3Phase:
         d_const = dst_0 + dS_b + dG_Ex_b
         
         def update_xB_i(xB_i_prev):
+            xB_i_prev = np.clip(xB_i_prev, self.eps, 1.0 - self.eps)
             dG_A_i = self._calculate_G_excess_for_surface_tension_different_phases_interface(xB_i_prev, k, phase_solid, phase_liquid, True, T_dependent_parameters)
             dG_B_i = self._calculate_G_excess_for_surface_tension_different_phases_interface(xB_i_prev, k, phase_solid, phase_liquid, False, T_dependent_parameters)
             dG_i = dG_A_i/omega_A - dG_B_i/omega_B

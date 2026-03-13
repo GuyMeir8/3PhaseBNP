@@ -144,6 +144,33 @@ class BNPOptimizer3Phase:
         else:
             de_constraints = ()
 
+        # --- HELPER: Heuristic Candidates ---
+        # These are "smart guesses" to ensure we check specific physical scenarios
+        # like complete mixing or phase separation at the solubility limits.
+        heuristic_candidates = [
+            [0.5, 0.5],          # Mixed
+            [0.99, 0.01],        # Phase Separation (A-rich alpha)
+            [0.01, 0.99],        # Phase Separation (B-rich alpha)
+            [0.01, 0.01],        # Pure Alpha
+            [0.99, 0.99],        # Pure Beta
+        ]
+        if initial_guess is not None:
+            heuristic_candidates.insert(0, list(initial_guess))
+
+        def run_local_minimization(start_guess):
+            """Helper to run a single local minimization from a guess."""
+            guess = list(start_guess)
+            if has_skin and len(guess) < 3:
+                guess.append(xB_total)
+            
+            try:
+                res = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons, tol=1e-10)
+                return res
+            except RuntimeError:
+                raise # Allow critical errors to propagate
+            except:
+                return None
+
         # Ratios must be between 0 and 1, but not exactly 0 or 1 to avoid division by zero.
         eps = 1e-4
         
@@ -190,24 +217,30 @@ class BNPOptimizer3Phase:
                     if res_polish.success and res_polish.fun < best_g_per_mole:
                         best_g_per_mole = res_polish.fun
                         best_ratios = res_polish.x
+                except RuntimeError:
+                    raise # Allow critical errors to propagate
                 except:
                     pass # If polish fails, keep DE result
+            
+            # --- AUGMENTED SEARCH: Check Heuristics as well ---
+            # Even if DE ran, we double-check the heuristic points to ensure 
+            # we didn't miss a narrow basin at the edges (common in phase separation).
+            for cand in heuristic_candidates:
+                res = run_local_minimization(cand)
+                if res and res.success and res.fun < best_g_per_mole:
+                     if not (geometry_type == "Core Shell" and shell_thickness_constraint(res.x) < -1e-6):
+                        best_g_per_mole = res.fun
+                        best_ratios = res.x
 
         # --- STRATEGY 2: LOCAL OPTIMIZATION (Single Guess) ---
         else:
-            # Prepare single guess
-            guess = list(initial_guess) if initial_guess is not None else [0.5, 0.5]
-            if has_skin:
-                guess.append(xB_total)
-            
-            try:
-                res = minimize(fun=objective, x0=guess, method='SLSQP', bounds=bounds, constraints=cons, tol=1e-10)
-                if res.success and res.fun < best_g_per_mole:
+            # Run through all heuristics instead of just one guess
+            for cand in heuristic_candidates:
+                res = run_local_minimization(cand)
+                if res and res.success and res.fun < best_g_per_mole:
                     if not (geometry_type == "Core Shell" and shell_thickness_constraint(res.x) < -1e-6):
-                         best_g_per_mole = res.fun
-                         best_ratios = res.x
-            except:
-                pass
+                        best_g_per_mole = res.fun
+                        best_ratios = res.x
 
         if best_ratios is None:
             return OptimizationResult3Phase(
