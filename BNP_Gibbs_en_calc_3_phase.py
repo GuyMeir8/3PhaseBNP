@@ -113,6 +113,7 @@ class GibbsEnergyCalculator3Phase:
                                skin_val: float = None, # type: ignore
                             ) -> float:
         
+        if xB_total == 0.5: xB_total = 0.5 - self.eps
         try:
             phases, skin = self._update_phases_based_on_skin(primary_phases, skin_val)
             T_dependent_parameters = self._get_T_dependent_vars(T, phases)
@@ -127,13 +128,13 @@ class GibbsEnergyCalculator3Phase:
                 T,
                 T_dependent_parameters
             )
-            G_ideal = self._calc_G_ideal(n_mp, x_mp, T, phases)
+            G_ideal = self._calc_G_ideal(n_mp, x_mp, T, phases, T_dependent_parameters)
             G_excess = self._calc_G_excess(n_mp, x_mp, T, phases, T_dependent_parameters)
             G_surface = self._calc_G_surface(x_mp, r_vals, T, phases, geometry_type, skin, T_dependent_parameters)
 
             return G_ideal + G_excess + G_surface # type: ignore
             
-        except ValueError: # Anytime something returns "no solution"
+        except (ValueError, OverflowError, ZeroDivisionError): # Anytime something returns "no solution" or diverges
             return 1.0
     
     def _calc_G_surface(self, x_mp, r_vals, T, phases, geometry_type, skin, T_dependent_parameters):
@@ -285,9 +286,6 @@ class GibbsEnergyCalculator3Phase:
                 )
 
                 return st_alpha_beta*A_alpha_beta + st_beta_skin*A_beta_skin + st_skin_vac*A_skin_vac
-
-
-
 
     @staticmethod
     def _calc_generic_split(n_A_alpha, n_B_alpha, n_A_total, n_B_total) -> Tuple[np.ndarray, np.ndarray]:
@@ -502,7 +500,7 @@ class GibbsEnergyCalculator3Phase:
     @staticmethod
     def real_from_roots(roots_prereal):
             r = roots_prereal
-            r = r[np.isreal(r)].real
+            r = r[np.abs(r.imag) < 1e-9].real
             r = r[r > 0]
             return r
 
@@ -518,8 +516,8 @@ class GibbsEnergyCalculator3Phase:
         
         r_spheric = self._calculate_spheric_Janus_geo(n_mp, T_dependent_parameters)
         
-        h_alpha_spheric = r_spheric[0] * sqrt(1 - r_spheric[2]**2)
-        h_beta_spheric = r_spheric[1] * sqrt(1 - r_spheric[2]**2)
+        h_alpha_spheric = r_spheric[0] * (1 - r_spheric[2])
+        h_beta_spheric = r_spheric[1] * (1 + r_spheric[2])
 
         st_alpha_beta = self._calculate_surface_tension(
             xB_alpha=x_mp[1,0],
@@ -597,6 +595,12 @@ class GibbsEnergyCalculator3Phase:
         r_alpha = sqrt(h_alpha**2 + a_final**2)
         r_beta = sqrt(h_beta**2 + a_final**2)
 
+        # SANITY CHECK: If force-balance solver diverged to huge radii (flat interface) 
+        # or returned NaNs, revert to the robust spheric approximation.
+        if (np.isnan(r_alpha) or np.isnan(r_beta) or 
+            r_alpha > 10 * r_spheric[0] or r_beta > 10 * r_spheric[1]):
+            return r_spheric
+
         cos_theta_alpha = h_alpha / r_alpha
         return np.array([r_alpha, r_beta, cos_theta_alpha])
 
@@ -605,20 +609,31 @@ class GibbsEnergyCalculator3Phase:
         V_beta = np.sum(n_mp[:,1] * T_dependent_parameters.v_mp[:,1])
         V_ratio = V_alpha / V_beta
 
-        def cos_theta_update(cos_theta_alpha): return V_ratio *((2 - cos_theta_alpha) * (1+cos_theta_alpha) ** 2 ) / ((1 - cos_theta_alpha) ** 2)  - 2
+        # The volume ratio Q = V_alpha / V_beta for a spherical particle cut by a plane satisfies:
+        # Q = (2 - 3c + c^3) / (2 + 3c - c^3)
+        # This rearranges to the cubic polynomial:
+        # c^3 - 3c + 2 * (1 - Q) / (1 + Q) = 0
+        # We solve this directly instead of using the unstable iterative solver.
         
-        cos_theta_alpha, loop_success = self.hybrid_solver_one_variable(
-            min_val=self.eps - 1,
-            max_val=1.0 - self.eps,
-            initial_guess=-0.05,
-            update_function=cos_theta_update
-        )
+        K = 2 * (1 - V_ratio) / (1 + V_ratio)
+        roots = np.roots([1, 0, -3, K])
         
-        if not loop_success:
-            raise ValueError("Spheric Janus geometry solver failed to converge.")
+        # We need the real root in the range [-1, 1]
+        real_roots = roots[np.abs(roots.imag) < 1e-9].real
+        valid_roots = real_roots[(real_roots >= -1.0 - 1e-9) & (real_roots <= 1.0 + 1e-9)]
         
-        r_alpha = ((3 * V_alpha) / (np.pi * (2 - cos_theta_alpha) * (1 + cos_theta_alpha) ** 2)) ** (1/3)
-        r_beta = ((3 * V_beta) / (np.pi * (2 + cos_theta_alpha) * (1 - cos_theta_alpha) ** 2)) ** (1/3)
+        # If multiple roots exist (unlikely in this range), take the one closest to 0
+        if len(valid_roots) > 0:
+            cos_theta_alpha = valid_roots[np.argmin(np.abs(valid_roots))]
+        else:
+            # Fallback for numerical edge cases
+            cos_theta_alpha = 1.0 if K > 0 else -1.0
+
+        # Clip to prevent division by zero in radius calculation
+        cos_theta_alpha = np.clip(cos_theta_alpha, -1.0 + self.eps, 1.0 - self.eps)
+
+        r_alpha = ((3 * V_alpha) / (np.pi * (2 + cos_theta_alpha) * (1 - cos_theta_alpha) ** 2)) ** (1/3)
+        r_beta = ((3 * V_beta) / (np.pi * (2 - cos_theta_alpha) * (1 + cos_theta_alpha) ** 2)) ** (1/3)
         
         return np.array([r_alpha, r_beta, cos_theta_alpha])
         
@@ -628,6 +643,7 @@ class GibbsEnergyCalculator3Phase:
             x_mp: np.ndarray,
             T: float,
             phases: Tuple[str, ...],
+            T_dependent_parameters: TemperatureDependentVars,
     ) -> float:
         """
         Calculates the ideal Gibbs free energy for the system.
@@ -639,7 +655,7 @@ class GibbsEnergyCalculator3Phase:
         R = 8.31446261815324  # J/(mol·K)
         G_ideal = 0.0
         num_phases = n_mp.shape[1]
-        g_mp = self._get_g_mp(T, phases)
+        g_mp = T_dependent_parameters.g_mp
 
         for phase_idx in range(num_phases):
             n_phase = np.sum(n_mp[:, phase_idx])
@@ -750,7 +766,7 @@ class GibbsEnergyCalculator3Phase:
             max_iterations=max_iterations
         )
         
-        if success:
+        if success and val > self.eps + min_val and val < max_val - self.eps:
             return val, success
             
         return self.generic_bisection_loop_one_variable(
