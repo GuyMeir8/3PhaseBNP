@@ -43,9 +43,10 @@ if __name__ == "__main__":
                 xa = res.xB_alpha if res.xB_alpha is not None else float('nan')
                 xb = res.xB_beta if res.xB_beta is not None else float('nan')
                 
-                msg = f"  Skin={skin} Geo={geo} Phases={phases} G_total={res.G_min:.4e} xBalpha={xa:.4f} xB_beta={xb:.4f}"
+                msg = f"  Skin={skin} Geo={geo} Phases={phases} G_total={res.G_min:.4e} xBalpha={xa:.4f} xB_beta={xb:.4f} n_alpha/n_tot={(res.n_alpha/float(n)):.2e}"
                 if skin:
-                    msg += f", xB_skin={res.xB_skin:.4f}"
+                    n_skin_val = float(n) - res.n_alpha - res.n_beta
+                    msg += f", xB_skin={res.xB_skin:.4f} n_skin/n_tot={(n_skin_val/float(n)):.2e}"
                 print(msg)
                 
                 # Calculate and print the surface tensions for valid results

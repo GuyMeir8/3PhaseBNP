@@ -178,7 +178,7 @@ class GibbsEnergyCalculator3Phase:
                 r_beta = r_vals[1]
                 r_interface = r_alpha*sqrt(1-r_vals[2]**2)
                 A_alpha_vac =A_Janus_out(r_alpha, r_vals[2])
-                cos_theta_beta = sqrt(1-(r_interface/r_beta)**2)
+                cos_theta_beta = r_vals[3]
                 A_beta_out = A_Janus_out(r_beta, cos_theta_beta)
                 A_alpha_beta = np.pi*r_interface**2
                 return st_alpha_vac*A_alpha_vac + st_beta_vac*A_beta_out + st_alpha_beta*A_alpha_beta
@@ -216,7 +216,7 @@ class GibbsEnergyCalculator3Phase:
                     T_dependent_parameters=T_dependent_parameters,
                 )
                 A_alpha_skin = A_Janus_out(r_alpha_no_skin, r_vals[2])
-                cos_theta_beta = sqrt(1-(r_interface_alpha_beta/r_beta_no_skin)**2)
+                cos_theta_beta = r_vals[3]
                 A_beta_skin = A_Janus_out(r_beta_no_skin, cos_theta_beta)
                 A_alpha_beta = np.pi*r_interface_alpha_beta**2
                 G_surf_alpha_skin = st_alpha_skin*A_alpha_skin
@@ -335,10 +335,10 @@ class GibbsEnergyCalculator3Phase:
         return n_skin
 
     @staticmethod
-    def _calc_V_for_given_Janus_geo(r_alpha, r_beta, cos_theta_alpha):
+    def _calc_V_for_given_Janus_geo(r_alpha, r_beta, cos_theta_alpha, cos_theta_beta):
         V_calc = lambda r, cos_theta : np.pi*(r**3)*(2+cos_theta)*((1-cos_theta)**2)/3
         V_alpha = V_calc(r_alpha, cos_theta_alpha)
-        V_beta = V_calc(r_beta, 1-cos_theta_alpha)
+        V_beta = V_calc(r_beta, cos_theta_beta)
         return V_alpha+V_beta
 
     def _calc_mole_skin_next_guess(
@@ -377,11 +377,12 @@ class GibbsEnergyCalculator3Phase:
                         T_dependent_parameters,
                         skin_data
                     )
-                V_no_skin = self._calc_V_for_given_Janus_geo(r_vals[0], r_vals[1], r_vals[2])
+                V_no_skin = self._calc_V_for_given_Janus_geo(r_vals[0], r_vals[1], r_vals[2], r_vals[3])
                 V_w_skin = self._calc_V_for_given_Janus_geo(
                     r_vals[0] + skin_thickness,
                     r_vals[1] + skin_thickness,
-                    r_vals[2]
+                    r_vals[2],
+                    r_vals[3]
                 )
                 V_skin = V_w_skin - V_no_skin
                 n_skin = V_skin / v_skin
@@ -423,7 +424,8 @@ class GibbsEnergyCalculator3Phase:
                 r_vals = np.array([
                     r_vals[0] + skin_thickness,
                     r_vals[1] + skin_thickness,
-                    r_vals[2]
+                    r_vals[2],
+                    r_vals[3]
                 ]) # Janus r_vals = Only values with skins
 
             case "Core Shell":
@@ -628,8 +630,9 @@ class GibbsEnergyCalculator3Phase:
 
         # Correct formula for cos(theta): h = R(1 - cos_theta) -> cos_theta = 1 - h/R
         cos_theta_alpha = 1.0 - h_alpha / r_alpha
+        cos_theta_beta = 1.0 - h_beta / r_beta
         
-        return np.array([r_alpha, r_beta, cos_theta_alpha])
+        return np.array([r_alpha, r_beta, cos_theta_alpha, cos_theta_beta])
 
     def _calculate_spheric_Janus_geo(self, n_mp, T_dependent_parameters):
         V_alpha = np.sum(n_mp[:,0] * T_dependent_parameters.v_mp[:,0])
@@ -671,7 +674,7 @@ class GibbsEnergyCalculator3Phase:
         r_alpha = ((3 * V_alpha) / (np.pi * (2 + cos_theta_alpha) * (1 - cos_theta_alpha) ** 2)) ** (1/3)
         r_beta = ((3 * V_beta) / (np.pi * (2 - cos_theta_alpha) * (1 + cos_theta_alpha) ** 2)) ** (1/3)
         
-        return np.array([r_alpha, r_beta, cos_theta_alpha])
+        return np.array([r_alpha, r_beta, cos_theta_alpha, -cos_theta_alpha])
         
     def _calc_G_ideal(
             self,
@@ -1028,7 +1031,7 @@ class GibbsEnergyCalculator3Phase:
         
         if np.isnan(st):
             raise ValueError("Surface tension calculation resulted in NaN.")
-        return max(st, 1e-4)
+        return max(st, 1e-2)
 
     def _calc_core_shell_geometry_for_known_nx(
             self,
