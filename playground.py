@@ -10,7 +10,7 @@ if __name__ == "__main__":
     # Define Test Ranges
     temperatures = [800, 1100, 1350]
     xBs = [0.01, 0.1, 0.5, 0.9, 0.99]
-    ns = [1, 5e-17]
+    ns = [5e-19, 5e-21]
     
     geometries = ["Janus", "Core Shell"]
     phase_combinations = [("FCC", "FCC"), ("Liquid", "Liquid"), ("FCC", "Liquid"), ("Liquid", "FCC")]
@@ -48,6 +48,35 @@ if __name__ == "__main__":
                     msg += f", xB_skin={res.xB_skin:.4f}"
                 print(msg)
                 
+                # Calculate and print the surface tensions for valid results
+                if not math.isinf(res.G_min) and not math.isnan(xa) and not math.isnan(xb):
+                    calc = optimizer.calculator
+                    actual_phases, _ = calc._update_phases_based_on_skin(phases, res.xB_skin if skin else None)
+                    T_dep = calc._get_T_dependent_vars(float(T), actual_phases)
+                    
+                    st_alpha_beta = calc._calculate_surface_tension(
+                        xB_alpha=xa, xB_beta=xb,
+                        phase_alpha=actual_phases[0], phase_beta=actual_phases[1],
+                        T=float(T), phases=actual_phases, T_dependent_parameters=T_dep
+                    )
+                    
+                    outer_phase = actual_phases[2] if skin else None
+                    xB_outer = res.xB_skin if skin else None
+                    
+                    st_alpha_out = calc._calculate_surface_tension(
+                        xB_alpha=xa, xB_beta=xB_outer,
+                        phase_alpha=actual_phases[0], phase_beta=outer_phase,
+                        T=float(T), phases=actual_phases, T_dependent_parameters=T_dep
+                    )
+                    
+                    st_beta_out = calc._calculate_surface_tension(
+                        xB_alpha=xb, xB_beta=xB_outer,
+                        phase_alpha=actual_phases[1], phase_beta=outer_phase,
+                        T=float(T), phases=actual_phases, T_dependent_parameters=T_dep
+                    )
+                    
+                    print(f"    ST alpha-out={st_alpha_out:.4f} beta-out={st_beta_out:.4f} alpha-beta={st_alpha_beta:.4f}")
+
             except Exception as e:
                 print(f"  Skin={skin} Geo={geo} Phases={phases} ERROR: {e}")
 

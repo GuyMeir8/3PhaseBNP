@@ -149,10 +149,10 @@ class BNPOptimizer3Phase:
         # like complete mixing or phase separation at the solubility limits.
         heuristic_candidates = [
             [0.5, 0.5],          # Mixed
-            [0.99, 0.01],        # Phase Separation (A-rich alpha)
-            [0.01, 0.99],        # Phase Separation (B-rich alpha)
-            [0.01, 0.01],        # Pure Alpha
-            [0.99, 0.99],        # Pure Beta
+            [0.999, 0.001],        # Phase Separation (A-rich alpha)
+            [0.001, 0.999],        # Phase Separation (B-rich alpha)
+            [0.001, 0.001],        # Pure Alpha
+            [0.999, 0.999],        # Pure Beta
         ]
         if initial_guess is not None:
             heuristic_candidates.insert(0, list(initial_guess))
@@ -242,7 +242,7 @@ class BNPOptimizer3Phase:
                         best_g_per_mole = res.fun
                         best_ratios = res.x
 
-        if best_ratios is None:
+        if best_ratios is None or best_g_per_mole >= 1.0:
             return OptimizationResult3Phase(
                 G_min=float('inf'), A_ratio_alpha=float('nan'), B_ratio_alpha=float('nan'),
                 geometry_type=geometry_type, primary_phases=primary_phases,
@@ -256,11 +256,19 @@ class BNPOptimizer3Phase:
         skin_val_at_min = xB_skin_at_min if has_skin else None
 
         # Final detailed calculation
-        phases, skin = self.calculator._update_phases_based_on_skin(primary_phases, skin_val_at_min)
-        T_dep = self.calculator._get_T_dependent_vars(T, phases)
-        n_mp, x_mp, r_vals = self.calculator._calc_mole_splits_and_geo(
-            A_ratio_at_min, B_ratio_at_min, n_total, xB_total, phases, geometry_type, skin, T, T_dep
-        )
+        try:
+            phases, skin = self.calculator._update_phases_based_on_skin(primary_phases, skin_val_at_min)
+            T_dep = self.calculator._get_T_dependent_vars(T, phases)
+            n_mp, x_mp, r_vals = self.calculator._calc_mole_splits_and_geo(
+                A_ratio_at_min, B_ratio_at_min, n_total, xB_total, phases, geometry_type, skin, T, T_dep
+            )
+        except (ValueError, RuntimeError, OverflowError, ZeroDivisionError):
+            return OptimizationResult3Phase(
+                G_min=float('inf'), A_ratio_alpha=float('nan'), B_ratio_alpha=float('nan'),
+                geometry_type=geometry_type, primary_phases=primary_phases,
+                has_skin=has_skin, xB_skin=xB_skin_guess,
+                r_vals=[]
+            )
 
         return OptimizationResult3Phase(
             G_min=best_g_per_mole * n_total,

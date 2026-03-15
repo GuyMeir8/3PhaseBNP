@@ -172,11 +172,6 @@ class BNPSeriesProcessor:
                     # 2. Multi Phase Tasks
                     for geo in geometries:
                         for phases in phase_pairs:
-                            # Skip Liquid-Liquid for Janus (as per original logic)
-                            if phases[0] == "Liquid" and phases[1] == "Liquid":
-                                if geo == "Janus":
-                                    continue
-
                             for has_skin in skin_options:
                                 
                                 # Janus Symmetry: Skip redundant pairs (e.g. Liquid-FCC if FCC-Liquid done)

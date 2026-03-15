@@ -361,7 +361,8 @@ class GibbsEnergyCalculator3Phase:
         n_B_no_skin = n_B_total - n_skin*skin_data.xB
 
         if n_A_no_skin < 0 or n_B_no_skin < 0:
-            return 1e9 # Return a large value to discourage the solver from this path
+            # Return 0.0 to signal the root finding loop to reduce n_skin.
+            return 0.0
 
         n_A_alpha = A_ratio_alpha * n_A_no_skin
         n_B_alpha = B_ratio_alpha * n_B_no_skin
@@ -1024,7 +1025,10 @@ class GibbsEnergyCalculator3Phase:
                 st = self._calculate_surface_tension_solid_to_liquid(xB_alpha if p_a != "Liquid" else xB_beta, xB_beta if p_b != "Liquid" else xB_alpha, phase_alpha if p_a != "Liquid" else phase_beta, T, phases, T_dependent_parameters, phase_liquid=phase_beta if p_b == "Liquid" else phase_alpha)
             case (p_a, p_b) if p_b is not None and "Liquid" not in (p_a, p_b):
                 st = self._calculate_surface_tension_solid_to_solid(xB_alpha, xB_beta, phase_alpha, phase_beta, T, phases, T_dependent_parameters)
-        return st
+        
+        if np.isnan(st):
+            raise ValueError("Surface tension calculation resulted in NaN.")
+        return max(st, 1e-4)
 
     def _calc_core_shell_geometry_for_known_nx(
             self,
