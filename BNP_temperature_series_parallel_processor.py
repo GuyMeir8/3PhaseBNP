@@ -98,7 +98,10 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "n_beta": 0.0,
                 "xB_alpha": xB_total,
                 "xB_beta": np.nan,
-                "r_vals": [r_single]
+                "r_1": r_single,
+                "r_2": np.nan,
+                "r_3": np.nan,
+                "r_4": np.nan
             })
 
         elif task_type == "MultiPhase":
@@ -121,6 +124,9 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 exhaustive_search=True
             )
             
+            r_list = res.r_vals if res.r_vals is not None else []
+            r_pad = r_list + [np.nan] * (4 - len(r_list))
+
             results_list.append({
                 "T": T,
                 "xB_total": xB_total,
@@ -137,7 +143,10 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "n_beta": res.n_beta,
                 "xB_alpha": res.xB_alpha,
                 "xB_beta": res.xB_beta,
-                "r_vals": res.r_vals
+                "r_1": r_pad[0],
+                "r_2": r_pad[1],
+                "r_3": r_pad[2],
+                "r_4": r_pad[3]
             })
     except Exception:
         # Return empty list on failure so the main loop continues
@@ -149,47 +158,47 @@ class BNPSeriesProcessor:
     def __init__(self, config: ThreePhaseConfiguration):
         self.config = config
     
-    def generate_tasks(self) -> List[Dict[str, Any]]:
-        """Generates a flat list of all specific tasks to run."""
+    def generate_tasks_for_n(self, n_total: float) -> List[Dict[str, Any]]:
+        """Generates a flat list of all specific tasks to run for a given n_total."""
         tasks = []
         
         geometries = self.config.geometries
         phase_pairs = list(itertools.product(self.config.phases, repeat=2))
         skin_options = [False, True]
 
-        for n_total in self.config.n_total_values:
-            for T in self.config.temperature_values:
-                for xB in self.config.xb_values:
-                    
-                    # 1. Single Phase Tasks
-                    for phase in self.config.phases:
-                        tasks.append({
-                            'task_type': 'SinglePhase',
-                            'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
-                            'phase': phase
-                        })
+        for T in self.config.temperature_values:
+            for xB in self.config.xb_values:
+                
+                # 1. Single Phase Tasks
+                for phase in self.config.phases:
+                    tasks.append({
+                        'task_type': 'SinglePhase',
+                        'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
+                        'phase': phase
+                    })
 
-                    # 2. Multi Phase Tasks
-                    for geo in geometries:
-                        for phases in phase_pairs:
-                            for has_skin in skin_options:
-                                
-                                # Janus Symmetry: Skip redundant pairs (e.g. Liquid-FCC if FCC-Liquid done)
-                                if geo == "Janus" and phases[0] > phases[1]:
-                                    continue
+                # 2. Multi Phase Tasks
+                for geo in geometries:
+                    for phases in phase_pairs:
+                        for has_skin in skin_options:
+                            
+                            # Janus Symmetry: Skip redundant pairs (e.g. Liquid-FCC if FCC-Liquid done)
+                            if geo == "Janus" and phases[0] > phases[1]:
+                                continue
 
-                                # Macroscopic (n=1) constraints (Only Core Shell, No Skin for n=1)
-                                if abs(n_total - 1.0) < 1e-9:
-                                    if has_skin: continue
-                                    if geo != "Core Shell": continue
+                            # Macroscopic (n=1) constraints (Only Core Shell, No Skin for n=1)
+                            if abs(n_total - 1.0) < 1e-9:
+                                if has_skin: continue
+                                if geo != "Core Shell": continue
+                                if phases == ("Liquid", "Liquid"): continue
 
-                                tasks.append({
-                                    'task_type': 'MultiPhase',
-                                    'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
-                                    'geometry': geo,
-                                    'phases': phases,
-                                    'has_skin': has_skin
-                                })
+                            tasks.append({
+                                'task_type': 'MultiPhase',
+                                'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
+                                'geometry': geo,
+                                'phases': phases,
+                                'has_skin': has_skin
+                            })
         return tasks
 
     def run(self, n_jobs: int = -1, auto_show: bool = True):
@@ -197,40 +206,9 @@ class BNPSeriesProcessor:
         Runs the parallel processing over the configuration grid.
         Automatically saves results to Results/ folder and opens the generated plots.
         """
-        # 1. Generate Tasks
-        print("Generating tasks...")
-        tasks = self.generate_tasks()
-        
         print(f"--- Starting Simulation ---")
         print(f"Config: {self.config.base_file_name}")
-        print(f"Points to process: {len(tasks)}")
         print(f"Jobs (Cores): {n_jobs if n_jobs != -1 else 'All Available'}")
-        
-        start_time = time.time()
-        
-        # 2. Run Parallel Processing
-        # n_jobs=-1 uses all available cores. verbose=5 shows progress.
-        nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
-            delayed(process_single_task)(task) for task in tasks
-        )
-            
-        # Flatten the list of lists into a single list of dictionaries
-        flat_results = [item for sublist in nested_results for item in sublist]
-            
-        end_time = time.time()
-        duration = end_time - start_time
-        duration_formatted = str(datetime.timedelta(seconds=duration))
-        print(f"Simulation completed in {duration_formatted}.")
-        
-        # 3. Save Results
-        df = pd.DataFrame(flat_results)
-        
-        if df.empty:
-            print("No results generated.")
-            return
-
-        # Sort for readability
-        df = df.sort_values(by=["n_total", "T", "xB_total", "G_min"])
         
         # Create Results directory if it doesn't exist
         output_dir = "Results"
@@ -239,11 +217,62 @@ class BNPSeriesProcessor:
 
         # Generate filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.config.base_file_name}_{timestamp}.csv"
-        filepath = os.path.join(output_dir, filename)
-        
-        df.to_csv(filepath, index=False)
-        print(f"Results saved to {filepath}")
+        chunk_files = []
+
+        for n_total in self.config.n_total_values:
+            print(f"\nProcessing n_total = {n_total}")
+            tasks = self.generate_tasks_for_n(n_total)
+            print(f"Points to process: {len(tasks)}")
+            
+            start_time = time.time()
+            
+            # Run Parallel Processing
+            # n_jobs=-1 uses all available cores. verbose=5 shows progress.
+            nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
+                delayed(process_single_task)(task) for task in tasks
+            )
+                
+            # Flatten the list of lists into a single list of dictionaries
+            flat_results = [item for sublist in nested_results for item in sublist]
+                
+            end_time = time.time()
+            duration = end_time - start_time
+            duration_formatted = str(datetime.timedelta(seconds=duration))
+            print(f"Chunk completed in {duration_formatted}.")
+            
+            if not flat_results:
+                print(f"No results generated for n_total={n_total}.")
+                continue
+
+            # Save Chunk Results
+            df = pd.DataFrame(flat_results)
+            df = df.sort_values(by=["T", "xB_total", "G_min"])
+            df["Geometry"] = df["Geometry"].replace({"Core Shell": "Core_Shell"})
+            
+            chunk_filename = f"{self.config.base_file_name}_n_{n_total}_{timestamp}.csv"
+            chunk_filepath = os.path.join(output_dir, chunk_filename)
+            df.to_csv(chunk_filepath, index=False)
+            chunk_files.append(chunk_filepath)
+            print(f"Chunk results saved to {chunk_filepath}")
+
+        if not chunk_files:
+            print("\nNo valid results were generated across all n_total values.")
+            return
+
+        print("\nCombining chunks into master file...")
+        combined_df = pd.concat([pd.read_csv(f) for f in chunk_files], ignore_index=True)
+        master_filename = f"{self.config.base_file_name}_{timestamp}.csv"
+        master_filepath = os.path.join(output_dir, master_filename)
+        combined_df.to_csv(master_filepath, index=False)
+        print(f"Master file saved to {master_filepath}")
+
+        # Automatically Open and Display Plots
+        print("Generating and displaying phase diagrams...")
+        try:
+            from plotting_3_phase import PhaseDiagramPlotting3Phase
+            PhaseDiagramPlotting3Phase(master_filepath, save_dir=output_dir, timestamp=timestamp, auto_show=auto_show)
+        except Exception as e:
+            print(f"Warning: Could not open plots. Error: {e}")
         
 if __name__ == "__main__":
     # Select Configuration

@@ -148,9 +148,10 @@ class BNPOptimizer3Phase:
         # These are "smart guesses" to ensure we check specific physical scenarios
         # like complete mixing or phase separation at the solubility limits.
         heuristic_candidates = [
-            [0.5, 0.5],          # Mixed
-            [0.999, 0.001],        # Phase Separation (A-rich alpha)
-            [0.001, 0.999],        # Phase Separation (B-rich alpha)
+            [0.999, 0.001],        # Extreme Phase Separation (A-rich alpha)
+            [0.001, 0.999],        # Extreme Phase Separation (B-rich alpha)
+            [0.9, 0.1],            # Moderate Phase Separation (~10% solubility limit)
+            [0.1, 0.9],            # Moderate Phase Separation (~10% solubility limit)
             [0.001, 0.001],        # Pure Alpha
             [0.999, 0.999],        # Pure Beta
         ]

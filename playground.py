@@ -10,7 +10,7 @@ if __name__ == "__main__":
     # Define Test Ranges
     temperatures = [800, 1100, 1350]
     xBs = [0.01, 0.1, 0.5, 0.9, 0.99]
-    ns = [5e-19, 5e-21]
+    ns = [1.0] # Testing macroscopic size
     
     geometries = ["Janus", "Core Shell"]
     phase_combinations = [("FCC", "FCC"), ("Liquid", "Liquid"), ("FCC", "Liquid"), ("Liquid", "FCC")]
