@@ -64,12 +64,12 @@ def _calculate_single_phase_energy(
     
     return G_ideal + G_excess + G_surface, r
 
-def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def process_temperature_series_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Worker function to process a specific calculation task.
-    task_data contains: T, xB_total, n_total, config, task_type, and specific params.
+    Worker function to process a specific configuration across a temperature series.
+    Utilizes warm-starting to pass the solution from T_i to T_{i+1}.
     """
-    T = task_data['T']
+    temperatures = task_data['temperatures']
     xB_total = task_data['xB_total']
     n_total = task_data['n_total']
     config = task_data['config']
@@ -80,76 +80,77 @@ def process_single_task(task_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
         if task_type == "SinglePhase":
             phase = task_data['phase']
-            G_single, r_single = _calculate_single_phase_energy(config, T, n_total, xB_total, phase)
-            
-            results_list.append({
-                "T": T,
-                "xB_total": xB_total,
-                "n_total": n_total,
-                "G_min": G_single,
-                "Geometry": "SinglePhase",
-                "PhaseAlpha": phase,
-                "PhaseBeta": "None",
-                "HasSkin": False,
-                "xB_skin": np.nan,
-                "A_ratio_alpha": 1.0,
-                "B_ratio_alpha": 1.0,
-                "n_alpha": n_total,
-                "n_beta": 0.0,
-                "xB_alpha": xB_total,
-                "xB_beta": np.nan,
-                "r_1": r_single,
-                "r_2": np.nan,
-                "r_3": np.nan,
-                "r_4": np.nan
-            })
+            for T in temperatures:
+                try:
+                    G_single, r_single = _calculate_single_phase_energy(config, T, n_total, xB_total, phase)
+                    
+                    results_list.append({
+                        "T": T, "xB_total": xB_total, "n_total": n_total,
+                        "G_min": G_single, "Geometry": "SinglePhase",
+                        "PhaseAlpha": phase, "PhaseBeta": "None",
+                        "HasSkin": False, "xB_skin": np.nan,
+                        "A_ratio_alpha": 1.0, "B_ratio_alpha": 1.0,
+                        "n_alpha": n_total, "n_beta": 0.0,
+                        "xB_alpha": xB_total, "xB_beta": np.nan,
+                        "r_1": r_single, "r_2": np.nan, "r_3": np.nan, "r_4": np.nan
+                    })
+                except Exception:
+                    pass
 
         elif task_type == "MultiPhase":
-            # Initialize optimizer with config directly
             optimizer = BNPOptimizer3Phase(config)
-            
             geo = task_data['geometry']
             phases = task_data['phases']
             has_skin = task_data['has_skin']
             
-            # Use exhaustive search for robustness in series processing
-            res: OptimizationResult3Phase = optimizer.find_minimum_energy(
-                T=T,
-                n_total=n_total,
-                xB_total=xB_total,
-                primary_phases=phases,
-                geometry_type=geo,
-                has_skin=has_skin,
-                xB_skin_guess=0.5, # Default guess
-                exhaustive_search=True
-            )
+            current_guess = None
             
-            r_list = res.r_vals if res.r_vals is not None else []
-            r_pad = r_list + [np.nan] * (4 - len(r_list))
+            for T in temperatures:
+                try:
+                    # Full search only on the first step or if we lost the trail
+                    needs_exhaustive = (current_guess is None)
+                    
+                    res: OptimizationResult3Phase = optimizer.find_minimum_energy(
+                        T=T,
+                        n_total=n_total,
+                        xB_total=xB_total,
+                        primary_phases=phases,
+                        geometry_type=geo,
+                        has_skin=has_skin,
+                        xB_skin_guess=current_guess[2] if (has_skin and current_guess and len(current_guess) > 2) else 0.5,
+                        initial_guess=current_guess,
+                        exhaustive_search=needs_exhaustive
+                    )
+                    
+                    r_list = res.r_vals if res.r_vals is not None else []
+                    r_pad = r_list + [np.nan] * (4 - len(r_list))
 
-            results_list.append({
-                "T": T,
-                "xB_total": xB_total,
-                "n_total": n_total,
-                "G_min": res.G_min,
-                "Geometry": geo,
-                "PhaseAlpha": phases[0],
-                "PhaseBeta": phases[1],
-                "HasSkin": has_skin,
-                "xB_skin": res.xB_skin if has_skin else np.nan,
-                "A_ratio_alpha": res.A_ratio_alpha,
-                "B_ratio_alpha": res.B_ratio_alpha,
-                "n_alpha": res.n_alpha,
-                "n_beta": res.n_beta,
-                "xB_alpha": res.xB_alpha,
-                "xB_beta": res.xB_beta,
-                "r_1": r_pad[0],
-                "r_2": r_pad[1],
-                "r_3": r_pad[2],
-                "r_4": r_pad[3]
-            })
+                    results_list.append({
+                        "T": T, "xB_total": xB_total, "n_total": n_total,
+                        "G_min": res.G_min, "Geometry": geo,
+                        "PhaseAlpha": phases[0], "PhaseBeta": phases[1],
+                        "HasSkin": has_skin,
+                        "xB_skin": res.xB_skin if has_skin else np.nan,
+                        "A_ratio_alpha": res.A_ratio_alpha,
+                        "B_ratio_alpha": res.B_ratio_alpha,
+                        "n_alpha": res.n_alpha, "n_beta": res.n_beta,
+                        "xB_alpha": res.xB_alpha, "xB_beta": res.xB_beta,
+                        "r_1": r_pad[0], "r_2": r_pad[1], "r_3": r_pad[2], "r_4": r_pad[3]
+                    })
+                    
+                    # Update guess for the next temperature step
+                    if res.G_min != float('inf') and res.G_min < 1.0 and not np.isnan(res.A_ratio_alpha):
+                        if has_skin:
+                            current_guess = [res.A_ratio_alpha, res.B_ratio_alpha, res.xB_skin]
+                        else:
+                            current_guess = [res.A_ratio_alpha, res.B_ratio_alpha]
+                    else:
+                        current_guess = None
+                        
+                except Exception:
+                    current_guess = None
+
     except Exception:
-        # Return empty list on failure so the main loop continues
         pass
 
     return results_list
@@ -166,39 +167,145 @@ class BNPSeriesProcessor:
         phase_pairs = list(itertools.product(self.config.phases, repeat=2))
         skin_options = [False, True]
 
-        for T in self.config.temperature_values:
-            for xB in self.config.xb_values:
+        temperatures = self.config.temperature_values
+
+        for xB in self.config.xb_values:
+            
+            # 1. Single Phase Tasks
+            for phase in self.config.phases:
+                tasks.append({
+                    'task_type': 'SinglePhase',
+                    'temperatures': temperatures, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
+                    'phase': phase
+                })
+
+            # 2. Multi Phase Tasks
+            for geo in geometries:
+                for phases in phase_pairs:
+                    for has_skin in skin_options:
+                        
+                        # Janus Symmetry: Skip redundant pairs
+                        if geo == "Janus" and phases[0] > phases[1]:
+                            continue
+
+                        # Macroscopic (n=1) constraints
+                        if abs(n_total - 1.0) < 1e-9:
+                            if has_skin: continue
+                            if geo != "Core Shell": continue
+                            if phases == ("Liquid", "Liquid"): continue
+
+                        tasks.append({
+                            'task_type': 'MultiPhase',
+                            'temperatures': temperatures, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
+                            'geometry': geo,
+                            'phases': phases,
+                            'has_skin': has_skin
+                        })
+        return tasks
+
+    def get_suspect_points(self, df: pd.DataFrame) -> List[Tuple[float, float]]:
+        """Identifies isolated anomalous points in the grid that may have failed to converge."""
+        df_valid = df[(df["G_min"] < 1.0) & (~np.isinf(df["G_min"]))].copy()
+        if df_valid.empty:
+            return []
+            
+        try:
+            # Find the absolute min energy config per point to build the map
+            idx = df_valid.groupby(["T", "xB_total"])["G_min"].idxmin()
+            df_min = df_valid.loc[idx].copy()
+            
+            def make_simple_label(row):
+                return f"{row['Geometry']}_{row['PhaseAlpha']}_{row['PhaseBeta']}_{row['HasSkin']}"
                 
-                # 1. Single Phase Tasks
-                for phase in self.config.phases:
-                    tasks.append({
-                        'task_type': 'SinglePhase',
-                        'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
-                        'phase': phase
-                    })
-
-                # 2. Multi Phase Tasks
-                for geo in geometries:
-                    for phases in phase_pairs:
-                        for has_skin in skin_options:
+            df_min["label"] = df_min.apply(make_simple_label, axis=1)
+            
+            grid_label_df = df_min.pivot(index="T", columns="xB_total", values="label")
+            grid_label = grid_label_df.values
+            
+            grid_xb_df = df_min.pivot(index="T", columns="xB_total", values="xB_alpha")
+            grid_xb = grid_xb_df.values
+            
+            rows, cols = grid_label.shape
+            T_vals = grid_label_df.index.values
+            xB_vals = grid_label_df.columns.values
+            
+            suspects = []
+            for r in range(rows):
+                for c in range(cols):
+                    val_label = grid_label[r, c]
+                    if pd.isna(val_label): continue
+                    
+                    matching_neighbors = 0
+                    valid_neighbors = 0
+                    
+                    val_xb = grid_xb[r, c]
+                    neighbor_xbs = []
+                    
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0: continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < rows and 0 <= nc < cols:
+                                n_val_label = grid_label[nr, nc]
+                                if pd.notna(n_val_label):
+                                    valid_neighbors += 1
+                                    if n_val_label == val_label:
+                                        matching_neighbors += 1
+                                        
+                                        # ONLY append xB if it's the exact same phase geometry
+                                        n_val_xb = grid_xb[nr, nc]
+                                        if pd.notna(n_val_xb):
+                                            neighbor_xbs.append(n_val_xb)
+                                        
+                    is_edge = (r == 0) or (r == rows - 1) or (c == 0) or (c == cols - 1)
+                    limit = 0 if is_edge else 1
+                    
+                    is_suspect = False
+                    
+                    # Condition 1: Label completely disagrees with neighbors
+                    if valid_neighbors > 0 and matching_neighbors <= limit:
+                        is_suspect = True
+                    # Condition 2: Label matches, but the phase composition violently inverted
+                    elif len(neighbor_xbs) > 0:
+                        avg_xb = sum(neighbor_xbs) / len(neighbor_xbs)
+                        if abs(val_xb - avg_xb) > 0.4:
+                            is_suspect = True
                             
-                            # Janus Symmetry: Skip redundant pairs (e.g. Liquid-FCC if FCC-Liquid done)
-                            if geo == "Janus" and phases[0] > phases[1]:
-                                continue
+                    if is_suspect:
+                        suspects.append((T_vals[r], xB_vals[c]))
+                        
+            return suspects
+        except Exception as e:
+            print(f"Warning: Inspector encountered an issue during speckle detection: {e}")
+            return []
 
-                            # Macroscopic (n=1) constraints (Only Core Shell, No Skin for n=1)
-                            if abs(n_total - 1.0) < 1e-9:
-                                if has_skin: continue
-                                if geo != "Core Shell": continue
-                                if phases == ("Liquid", "Liquid"): continue
+    def generate_patch_tasks_for_n(self, n_total: float, suspect_points: List[Tuple[float, float]]) -> List[Dict[str, Any]]:
+        """Generates exhaustive search tasks specifically for suspect points."""
+        tasks = []
+        geometries = self.config.geometries
+        phase_pairs = list(itertools.product(self.config.phases, repeat=2))
+        skin_options = [False, True]
 
-                            tasks.append({
-                                'task_type': 'MultiPhase',
-                                'T': T, 'xB_total': xB, 'n_total': n_total, 'config': self.config,
-                                'geometry': geo,
-                                'phases': phases,
-                                'has_skin': has_skin
-                            })
+        for T_susp, xB_susp in suspect_points:
+            for geo in geometries:
+                for phases in phase_pairs:
+                    for has_skin in skin_options:
+                        if geo == "Janus" and phases[0] > phases[1]: continue
+                        if abs(n_total - 1.0) < 1e-9:
+                            if has_skin: continue
+                            if geo != "Core Shell": continue
+                            if phases == ("Liquid", "Liquid"): continue
+
+                        tasks.append({
+                            'task_type': 'MultiPhase',
+                            'temperatures': [T_susp], # A single element list triggers a heavy exhaustive search (no warm-start)
+                            'xB_total': xB_susp,
+                            'n_total': n_total,
+                            'config': self.config,
+                            'geometry': geo,
+                            'phases': phases,
+                            'has_skin': has_skin
+                        })
         return tasks
 
     def run(self, n_jobs: int = -1, auto_show: bool = True):
@@ -229,7 +336,7 @@ class BNPSeriesProcessor:
             # Run Parallel Processing
             # n_jobs=-1 uses all available cores. verbose=5 shows progress.
             nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
-                delayed(process_single_task)(task) for task in tasks
+                delayed(process_temperature_series_task)(task) for task in tasks
             )
                 
             # Flatten the list of lists into a single list of dictionaries
@@ -244,8 +351,26 @@ class BNPSeriesProcessor:
                 print(f"No results generated for n_total={n_total}.")
                 continue
 
-            # Save Chunk Results
             df = pd.DataFrame(flat_results)
+            
+            # --- AUTO-FIX / INSPECTOR ---
+            suspect_points = self.get_suspect_points(df)
+            if suspect_points:
+                print(f"Inspector found {len(suspect_points)} suspect points. Queueing deep patch search...")
+                patch_tasks = self.generate_patch_tasks_for_n(n_total, suspect_points)
+                
+                nested_patch_results = Parallel(n_jobs=n_jobs, verbose=5)(
+                    delayed(process_temperature_series_task)(task) for task in patch_tasks
+                )
+                
+                flat_patch = [item for sublist in nested_patch_results for item in sublist]
+                if flat_patch:
+                    df = pd.concat([df, pd.DataFrame(flat_patch)], ignore_index=True)
+                    # Deduplicate to keep only the absolute lowest G_min if multiple calculations exist for the same config
+                    df = df.sort_values(by=["T", "xB_total", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin", "G_min"])
+                    df = df.drop_duplicates(subset=["T", "xB_total", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin"], keep='first')
+            # ---------------------------
+
             df = df.sort_values(by=["T", "xB_total", "G_min"])
             df["Geometry"] = df["Geometry"].replace({"Core Shell": "Core_Shell"})
             

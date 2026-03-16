@@ -143,11 +143,17 @@ class BNPOptimizer3Phase:
             de_constraints = (NonlinearConstraint(shell_thickness_constraint, 0.0, np.inf),)
         else:
             de_constraints = ()
+            
+        # Dynamic bound to prevent optimizing fractions of an atom at the nanoscale
+        # 1e-25 moles is roughly 0.06 atoms. This smoothly tightens the bound for tiny droplets.
+        eps = max(1e-7, 1e-25 / n_total)
 
         # --- HELPER: Heuristic Candidates ---
         # These are "smart guesses" to ensure we check specific physical scenarios
         # like complete mixing or phase separation at the solubility limits.
         heuristic_candidates = [
+            [1.0 - eps, eps],      # Ultra Extreme Phase Separation
+            [eps, 1.0 - eps],      # Ultra Extreme Phase Separation
             [0.999, 0.001],        # Extreme Phase Separation (A-rich alpha)
             [0.001, 0.999],        # Extreme Phase Separation (B-rich alpha)
             [0.9, 0.1],            # Moderate Phase Separation (~10% solubility limit)
@@ -172,9 +178,6 @@ class BNPOptimizer3Phase:
             except:
                 return None
 
-        # Ratios must be between 0 and 1, but not exactly 0 or 1 to avoid division by zero.
-        eps = 1e-4
-        
         if has_skin:
             # Optimize: A_ratio, B_ratio, xB_skin
             bounds = [(eps, 1.0 - eps), (eps, 1.0 - eps), (eps, 1.0 - eps)]
@@ -271,12 +274,29 @@ class BNPOptimizer3Phase:
                 r_vals=[]
             )
 
+        n_alpha_val = np.sum(n_mp[:, 0])
+        n_beta_val = np.sum(n_mp[:, 1])
+        xB_alpha_val = x_mp[1, 0]
+        xB_beta_val = x_mp[1, 1]
+        r_vals_list = r_vals.tolist()
+        
+        # Enforce canonical ordering for perfectly symmetric geometries to prevent random plotter flipping
+        if geometry_type == "Janus" and primary_phases[0] == primary_phases[1]:
+            if xB_alpha_val > xB_beta_val:
+                A_ratio_at_min = 1.0 - A_ratio_at_min
+                B_ratio_at_min = 1.0 - B_ratio_at_min
+                n_alpha_val, n_beta_val = n_beta_val, n_alpha_val
+                xB_alpha_val, xB_beta_val = xB_beta_val, xB_alpha_val
+                if len(r_vals_list) >= 4:
+                    r_vals_list[0], r_vals_list[1] = r_vals_list[1], r_vals_list[0]
+                    r_vals_list[2], r_vals_list[3] = r_vals_list[3], r_vals_list[2]
+
         return OptimizationResult3Phase(
             G_min=best_g_per_mole * n_total,
             A_ratio_alpha=A_ratio_at_min, B_ratio_alpha=B_ratio_at_min,
             geometry_type=geometry_type, primary_phases=primary_phases,
             has_skin=has_skin, xB_skin=xB_skin_at_min,
-            n_alpha=np.sum(n_mp[:, 0]), n_beta=np.sum(n_mp[:, 1]),
-            xB_alpha=x_mp[1, 0], xB_beta=x_mp[1, 1],
-            r_vals=r_vals.tolist()
+            n_alpha=n_alpha_val, n_beta=n_beta_val,
+            xB_alpha=xB_alpha_val, xB_beta=xB_beta_val,
+            r_vals=r_vals_list
         )

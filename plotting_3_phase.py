@@ -106,6 +106,14 @@ class PhaseDiagramPlotting3Phase:
             else:
                 suffix = "+SkinB"
         
+        # Append dominant material to distinguish inversions (e.g. Cu-core vs Ag-core)
+        xb_a = row.get("xB_alpha", np.nan)
+        xb_b = row.get("xB_beta", np.nan)
+        if not pd.isna(xb_a):
+            a = f"{a}(Cu)" if xb_a > 0.5 else f"{a}(Ag)"
+        if not pd.isna(xb_b):
+            b = f"{b}(Cu)" if xb_b > 0.5 else f"{b}(Ag)"
+
         if geo == "SinglePhase":
             return f"{geo}{suffix}__{a}"
         
@@ -243,6 +251,10 @@ class PhaseDiagramPlotting3Phase:
             pa = right
             pb = "None"
             
+        # Strip the compositional tags (e.g. "(Ag)") to restore base phase names
+        pa = pa.split("(")[0]
+        pb = pb.split("(")[0]
+
         return geo, pa, pb, has_skin, xb_skin
 
     def enforce_phase_threshold(self, row):
