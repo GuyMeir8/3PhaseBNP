@@ -191,8 +191,9 @@ class BNPSeriesProcessor:
                         # Macroscopic (n=1) constraints
                         if abs(n_total - 1.0) < 1e-9:
                             if has_skin: continue
-                            if geo != "Core Shell": continue
+                            if geo != "Janus": continue
                             if phases == ("Liquid", "Liquid"): continue
+                            if phases[0] > phases[1]: continue
 
                         tasks.append({
                             'task_type': 'MultiPhase',
@@ -293,8 +294,9 @@ class BNPSeriesProcessor:
                         if geo == "Janus" and phases[0] > phases[1]: continue
                         if abs(n_total - 1.0) < 1e-9:
                             if has_skin: continue
-                            if geo != "Core Shell": continue
+                            if geo != "Janus": continue
                             if phases == ("Liquid", "Liquid"): continue
+                            if phases[0] > phases[1]: continue
 
                         tasks.append({
                             'task_type': 'MultiPhase',
@@ -329,29 +331,69 @@ class BNPSeriesProcessor:
         for n_total in self.config.n_total_values:
             print(f"\nProcessing n_total = {n_total}")
             tasks = self.generate_tasks_for_n(n_total)
-            print(f"Points to process: {len(tasks)}")
+            
+            # --- Checkpoint / Resume Logic ---
+            checkpoint_filepath = os.path.join(output_dir, f"{self.config.base_file_name}_n_{n_total}_checkpoint.csv")
+            completed_task_ids = set()
+            if os.path.exists(checkpoint_filepath):
+                try:
+                    df_cp = pd.read_csv(checkpoint_filepath)
+                    if not df_cp.empty:
+                        for _, row in df_cp[['xB_total', 'Geometry', 'PhaseAlpha', 'PhaseBeta', 'HasSkin']].drop_duplicates().iterrows():
+                            xb_str = f"{float(row['xB_total']):.6g}"
+                            if row['Geometry'] == 'SinglePhase':
+                                completed_task_ids.add(f"SinglePhase_{xb_str}_{row['PhaseAlpha']}")
+                            else:
+                                completed_task_ids.add(f"MultiPhase_{xb_str}_{row['Geometry']}_{row['PhaseAlpha']}_{row['PhaseBeta']}_{bool(row['HasSkin'])}")
+                        print(f"Resuming from checkpoint. Found {len(completed_task_ids)} completed task configurations.")
+                except Exception as e:
+                    print(f"Warning: Could not read checkpoint file {checkpoint_filepath}: {e}")
+            
+            def get_task_id(task):
+                xb_str = f"{float(task['xB_total']):.6g}"
+                if task['task_type'] == 'SinglePhase':
+                    return f"SinglePhase_{xb_str}_{task['phase']}"
+                else:
+                    return f"MultiPhase_{xb_str}_{task['geometry']}_{task['phases'][0]}_{task['phases'][1]}_{bool(task['has_skin'])}"
+
+            tasks_to_run = [t for t in tasks if get_task_id(t) not in completed_task_ids]
+            print(f"Points to process: {len(tasks_to_run)} (Skipped {len(tasks) - len(tasks_to_run)})")
             
             start_time = time.time()
             
-            # Run Parallel Processing
-            # n_jobs=-1 uses all available cores. verbose=5 shows progress.
-            nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
-                delayed(process_temperature_series_task)(task) for task in tasks
-            )
+            # --- Batched Parallel Processing ---
+            batch_size = 50 # Process 50 configurations per save point
+            
+            for i in range(0, len(tasks_to_run), batch_size):
+                batch_tasks = tasks_to_run[i:i+batch_size]
+                batch_num = i//batch_size + 1
+                total_batches = (len(tasks_to_run) + batch_size - 1)//batch_size
+                print(f"  Running batch {batch_num}/{total_batches} (saving checkpoint after)...")
                 
-            # Flatten the list of lists into a single list of dictionaries
-            flat_results = [item for sublist in nested_results for item in sublist]
+                batch_nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
+                    delayed(process_temperature_series_task)(task) for task in batch_tasks
+                )
                 
+                batch_flat = [item for sublist in batch_nested_results for item in sublist]
+                
+                if batch_flat:
+                    df_batch = pd.DataFrame(batch_flat)
+                    if os.path.exists(checkpoint_filepath):
+                        df_batch.to_csv(checkpoint_filepath, mode='a', header=False, index=False)
+                    else:
+                        df_batch.to_csv(checkpoint_filepath, index=False)
+            
             end_time = time.time()
             duration = end_time - start_time
             duration_formatted = str(datetime.timedelta(seconds=duration))
-            print(f"Chunk completed in {duration_formatted}.")
+            print(f"Chunk calculations completed in {duration_formatted}.")
             
-            if not flat_results:
+            # Load the complete data (from checkpoints)
+            if not os.path.exists(checkpoint_filepath):
                 print(f"No results generated for n_total={n_total}.")
                 continue
 
-            df = pd.DataFrame(flat_results)
+            df = pd.read_csv(checkpoint_filepath)
             
             # --- AUTO-FIX / INSPECTOR ---
             suspect_points = self.get_suspect_points(df)
@@ -365,7 +407,10 @@ class BNPSeriesProcessor:
                 
                 flat_patch = [item for sublist in nested_patch_results for item in sublist]
                 if flat_patch:
-                    df = pd.concat([df, pd.DataFrame(flat_patch)], ignore_index=True)
+                    df_patch = pd.DataFrame(flat_patch)
+                    # Append patch results to checkpoint as well so we don't lose them
+                    df_patch.to_csv(checkpoint_filepath, mode='a', header=False, index=False)
+                    df = pd.concat([df, df_patch], ignore_index=True)
                     # Deduplicate to keep only the absolute lowest G_min if multiple calculations exist for the same config
                     df = df.sort_values(by=["T", "xB_total", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin", "G_min"])
                     df = df.drop_duplicates(subset=["T", "xB_total", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin"], keep='first')
@@ -379,6 +424,12 @@ class BNPSeriesProcessor:
             df.to_csv(chunk_filepath, index=False)
             chunk_files.append(chunk_filepath)
             print(f"Chunk results saved to {chunk_filepath}")
+            
+            # Remove checkpoint file after successful completion
+            try:
+                os.remove(checkpoint_filepath)
+            except Exception as e:
+                pass
 
         if not chunk_files:
             print("\nNo valid results were generated across all n_total values.")
@@ -403,6 +454,9 @@ if __name__ == "__main__":
     # Select Configuration
     # config = standard_configuration
     config = low_res_configuration
+    
+    # Override the n_total values just for this parallel run
+    config.n_total_values = [5e-17]
     
     processor = BNPSeriesProcessor(config)
     processor.run()
