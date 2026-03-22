@@ -158,7 +158,7 @@ class PhaseSlicePlotter:
         
         ax1.set_ylabel("Mole Fraction")
         ax1.set_title(f"{self.title_prefix}, n = {self.n_total:.1e}\nPhase Fractions", fontsize=14, pad=15)
-        ax1.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        ax1.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         ax1.grid(True, linestyle='--', alpha=0.6)
         ax1.set_ylim(-0.05, 1.05)
         
@@ -174,7 +174,7 @@ class PhaseSlicePlotter:
         ax2.set_xlabel(self.x_label, fontsize=12)
         ax2.set_ylabel("Composition (xB)", fontsize=12)
         ax2.set_title("Phase Compositions", fontsize=14, pad=10)
-        ax2.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        ax2.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
         ax2.grid(True, linestyle='--', alpha=0.6)
         ax2.set_ylim(-0.05, 1.05)
         
@@ -201,6 +201,7 @@ class PhaseSlicePlotter:
                          fontsize=9)
                          
         plt.tight_layout()
+        plt.subplots_adjust(right=0.75)
         
         # Save figure
         if self.save_dir:

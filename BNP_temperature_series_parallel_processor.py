@@ -191,7 +191,7 @@ class BNPSeriesProcessor:
                         # Macroscopic (n=1) constraints
                         if abs(n_total - 1.0) < 1e-9:
                             if has_skin: continue
-                            if geo != "Janus": continue
+                            if geo != "Core Shell": continue
                             if phases == ("Liquid", "Liquid"): continue
                             if phases[0] > phases[1]: continue
 
@@ -361,27 +361,43 @@ class BNPSeriesProcessor:
             
             start_time = time.time()
             
-            # --- Batched Parallel Processing ---
-            batch_size = 50 # Process 50 configurations per save point
+            # --- Continuous Parallel Processing with Periodic Checkpointing ---
+            # Using a generator keeps all workers 100% busy without artificial batch barriers,
+            # while still allowing us to save progress periodically.
+            save_frequency = 10 # Save a checkpoint every 10 completed tasks
             
-            for i in range(0, len(tasks_to_run), batch_size):
-                batch_tasks = tasks_to_run[i:i+batch_size]
-                batch_num = i//batch_size + 1
-                total_batches = (len(tasks_to_run) + batch_size - 1)//batch_size
-                print(f"  Running batch {batch_num}/{total_batches} (saving checkpoint after)...")
+            print(f"  Processing tasks continuously (saving checkpoint every {save_frequency} tasks)...")
+            
+            # "generator_unordered" yields results instantly, preventing a slow task from blocking the saves
+            results_generator = Parallel(n_jobs=n_jobs, verbose=5, return_as="generator_unordered")(
+                delayed(process_temperature_series_task)(task) for task in tasks_to_run
+            )
+            
+            tasks_completed = 0
+            pending_results = []
+            
+            for task_result in results_generator:
+                pending_results.extend(task_result)
+                tasks_completed += 1
                 
-                batch_nested_results = Parallel(n_jobs=n_jobs, verbose=5)(
-                    delayed(process_temperature_series_task)(task) for task in batch_tasks
-                )
-                
-                batch_flat = [item for sublist in batch_nested_results for item in sublist]
-                
-                if batch_flat:
-                    df_batch = pd.DataFrame(batch_flat)
-                    if os.path.exists(checkpoint_filepath):
-                        df_batch.to_csv(checkpoint_filepath, mode='a', header=False, index=False)
-                    else:
-                        df_batch.to_csv(checkpoint_filepath, index=False)
+                # Save to checkpoint when we hit the frequency threshold
+                if tasks_completed % save_frequency == 0:
+                    if pending_results:
+                        df_batch = pd.DataFrame(pending_results)
+                        if os.path.exists(checkpoint_filepath):
+                            df_batch.to_csv(checkpoint_filepath, mode='a', header=False, index=False)
+                        else:
+                            df_batch.to_csv(checkpoint_filepath, index=False)
+                        pending_results = [] # Reset for next save
+                    print(f"    [Checkpoint] Safely wrote progress to disk (Task {tasks_completed})...")
+                        
+            # Save any remaining results after the loop finishes
+            if pending_results:
+                df_batch = pd.DataFrame(pending_results)
+                if os.path.exists(checkpoint_filepath):
+                    df_batch.to_csv(checkpoint_filepath, mode='a', header=False, index=False)
+                else:
+                    df_batch.to_csv(checkpoint_filepath, index=False)
             
             end_time = time.time()
             duration = end_time - start_time
