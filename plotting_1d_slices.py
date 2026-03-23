@@ -5,7 +5,7 @@ import os
 import glob
 
 class PhaseSlicePlotter:
-    def __init__(self, file_name, independent_var, constant_val, n_total=None, save_dir="Results"):
+    def __init__(self, file_name, independent_var, constant_val, n_total=None, save_dir="Results", show_transitions=False):
         """
         Generates 1D slice plots of phase fractions and compositions.
         
@@ -15,11 +15,13 @@ class PhaseSlicePlotter:
             constant_val: The value of the OTHER variable to hold constant.
                           (e.g. if independent_var='temperature', constant_val is the xB_total).
             n_total: Specific mole amount to plot. Defaults to the first one found if None.
+            show_transitions: If True, draws vertical lines and labels for phase changes.
         """
         self.file_name = file_name
         self.independent_var = independent_var.lower()
         self.constant_val = constant_val
         self.save_dir = save_dir
+        self.show_transitions = show_transitions
         
         self.df = pd.read_csv(file_name)
         
@@ -100,22 +102,25 @@ class PhaseSlicePlotter:
             # SinglePhase usually has NaN for n_beta and n_alpha might just be n_total
             if row['Geometry'] == 'SinglePhase' or pd.isna(row['n_alpha']):
                 na = nt
-                nb = 0.0
+                nb = np.nan
             else:
                 na = row['n_alpha']
-                nb = row['n_beta'] if not pd.isna(row['n_beta']) else 0.0
+                nb = row['n_beta'] if not pd.isna(row['n_beta']) else np.nan
                 
             has_skin = row['HasSkin']
-            ns = nt - na - nb if has_skin else 0.0
+            if has_skin:
+                ns = nt - na - (nb if pd.notna(nb) else 0.0)
+            else:
+                ns = np.nan
             
             # Prevent tiny negative values due to float precision
-            na = max(0.0, na)
-            nb = max(0.0, nb)
-            ns = max(0.0, ns)
+            if pd.notna(na): na = max(0.0, na)
+            if pd.notna(nb): nb = max(0.0, nb)
+            if pd.notna(ns): ns = max(0.0, ns)
             
-            f_a = na / nt
-            f_b = nb / nt
-            f_s = ns / nt
+            f_a = na / nt if pd.notna(na) else np.nan
+            f_b = nb / nt if pd.notna(nb) else np.nan
+            f_s = ns / nt if pd.notna(ns) else np.nan
             
             return pd.Series([f_a, f_b, f_s])
             
@@ -179,26 +184,27 @@ class PhaseSlicePlotter:
         ax2.set_ylim(-0.05, 1.05)
         
         # --- Add State Change Markers ---
-        states = self.df_plot['State'].values
-        text_heights = [0.8, 0.5, 0.2] # Alternating heights so text doesn't overlap on clustered transitions
-        text_idx = 0
-        
-        for i in range(1, len(states)):
-           if states[i] != states[i-1]:
-                change_x = (x[i] + x[i-1]) / 2.0
-                
-                # Draw vertical lines
-                ax1.axvline(x=change_x, color='black', linestyle=':', linewidth=1.5, alpha=0.7)
-                ax2.axvline(x=change_x, color='black', linestyle=':', linewidth=1.5, alpha=0.7)
-                
-                # Annotate the transition on the top plot
-                trans_text = f"{states[i-1]} \n-> {states[i]}"
-                height = text_heights[text_idx % len(text_heights)]
-                text_idx += 1
-                
-                ax1.text(change_x, height, trans_text, rotation=90, va='center', ha='right', 
-                         bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=0.3'),
-                         fontsize=9)
+        if self.show_transitions:
+            states = self.df_plot['State'].values
+            text_heights = [0.8, 0.5, 0.2] # Alternating heights so text doesn't overlap on clustered transitions
+            text_idx = 0
+            
+            for i in range(1, len(states)):
+               if states[i] != states[i-1]:
+                    change_x = (x[i] + x[i-1]) / 2.0
+                    
+                    # Draw vertical lines
+                    ax1.axvline(x=change_x, color='black', linestyle=':', linewidth=1.5, alpha=0.7)
+                    ax2.axvline(x=change_x, color='black', linestyle=':', linewidth=1.5, alpha=0.7)
+                    
+                    # Annotate the transition on the top plot
+                    trans_text = f"{states[i-1]} \n-> {states[i]}"
+                    height = text_heights[text_idx % len(text_heights)]
+                    text_idx += 1
+                    
+                    ax1.text(change_x, height, trans_text, rotation=90, va='center', ha='right', 
+                             bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=0.3'),
+                             fontsize=9)
                          
         plt.tight_layout()
         plt.subplots_adjust(right=0.75)
@@ -251,7 +257,7 @@ if __name__ == "__main__":
         print(f"Using file: {target_file}")
         
         # Isotherm (Constant Temperature of 1100K, Sweeping Composition)
-        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1100.0)
+        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1200.0, show_transitions=False)
         
     else:
         print("No file selected or found. Exiting.")

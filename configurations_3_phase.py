@@ -55,8 +55,9 @@ standard_configuration = ThreePhaseConfiguration()
 # 2. Low Resolution (Faster, good for general trends)
 low_res_configuration = ThreePhaseConfiguration(
     base_file_name="3Phase_LowRes",
-    t_min = 500.0,
-    n_total_values=[1.0]
+    t_min = 400.0,
+    t_max = 1300.0,
+    n_total_values=[5e-21]
 )   
 
 # 3. Debugging (Very fast, minimal points to check if code runs)

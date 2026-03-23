@@ -470,9 +470,7 @@ if __name__ == "__main__":
     # Select Configuration
     # config = standard_configuration
     config = low_res_configuration
-    
-    # Override the n_total values just for this parallel run
-    config.n_total_values = [5e-17]
+
     
     processor = BNPSeriesProcessor(config)
     processor.run()

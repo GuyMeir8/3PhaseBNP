@@ -46,7 +46,8 @@ class PhaseDiagramPlotting3Phase:
         }
 
         # 2. Load Data
-        self.df = pd.read_csv(file_name)
+        self.df_raw = pd.read_csv(file_name)
+        self.df = self.df_raw.copy()
         self.preprocess_data()
 
         # 3. Filter Valid Results
@@ -85,6 +86,11 @@ class PhaseDiagramPlotting3Phase:
         for col in ["Geometry", "PhaseAlpha", "PhaseBeta"]:
             if col in self.df.columns:
                 self.df[col] = self.df[col].astype(str).str.strip()
+                
+        if "HasSkin" in self.df.columns:
+            # Handle potential string conversions of bools from the CSV
+            self.df["HasSkin"] = self.df["HasSkin"].replace({'True': True, 'False': False, '1': True, '0': False})
+            self.df["HasSkin"] = self.df["HasSkin"].fillna(False).astype(bool)
         
         # Ensure numeric columns
         cols = ["xB_total", "T", "G_min", "n_total", "n_alpha", "n_beta", "xB_skin"]
@@ -275,7 +281,6 @@ class PhaseDiagramPlotting3Phase:
             row["PhaseBeta"] = "None" 
             if row["xB_total"] > 0.5:
                 row["PhaseAlpha"] = original_beta_phase
-            row["HasSkin"] = False
             return row
 
         # If Core (Alpha) is tiny -> SinglePhase Beta
@@ -284,14 +289,12 @@ class PhaseDiagramPlotting3Phase:
             row["Geometry"] = "SinglePhase"
             row["PhaseAlpha"] = original_beta_phase
             row["PhaseBeta"] = "None"
-            row["HasSkin"] = False
             return row
         
         # If Shell (Beta) is tiny -> SinglePhase Alpha
         if (nb / n_tot) < THRESHOLD:
             row["Geometry"] = "SinglePhase"
             row["PhaseBeta"] = "None"
-            row["HasSkin"] = False
             return row
             
         return row
@@ -304,7 +307,7 @@ class PhaseDiagramPlotting3Phase:
             if subset.empty: continue
             
             fig = plt.figure(figsize=(12, 8))
-            base_size = 35
+            base_size = 45 # Slightly larger to help skin visibility
             MIN_VISIBLE_RATIO = 0.2 # Ensures a phase takes up at least 20% of the marker area
 
             # 1. Single Phase
@@ -380,8 +383,8 @@ class PhaseDiagramPlotting3Phase:
                 Patch(facecolor=self.COLORS['Beta_FCC'], label='Beta (Shell/Back): FCC'),
                 Patch(facecolor=self.COLORS['Alpha_Liquid'], label='Alpha (Core/Seg): Liquid'),
                 Patch(facecolor=self.COLORS['Beta_Liquid'], label='Beta (Shell/Back): Liquid'),
-                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=0.5, markersize=10),
-                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=0.5, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=1.0, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=1.0, markersize=10),
                 Line2D([0], [0], marker=self._create_segment_marker(0.3), color='w', label='Janus: Alpha (Segment) / Beta (Back)', markerfacecolor='gray', markeredgecolor='black', markersize=12),
             ]
             
@@ -409,14 +412,14 @@ class PhaseDiagramPlotting3Phase:
         line_widths = pd.Series([0.0] * len(df), index=df.index)
         has_skin = df["HasSkin"]
         if has_skin.any():
-            FIXED_WIDTH = 0.5
+            FIXED_WIDTH = 1.0
             mask_a = has_skin & (df["xB_skin"] < 0.5)
-            edge_colors[mask_a] = self.COLORS["Skin_A"]
-            line_widths[mask_a] = FIXED_WIDTH
+            edge_colors.loc[mask_a] = self.COLORS["Skin_A"]
+            line_widths.loc[mask_a] = FIXED_WIDTH
             mask_b = has_skin & (df["xB_skin"] >= 0.5)
-            edge_colors[mask_b] = self.COLORS["Skin_B"]
-            line_widths[mask_b] = FIXED_WIDTH
-        return edge_colors, line_widths
+            edge_colors.loc[mask_b] = self.COLORS["Skin_B"]
+            line_widths.loc[mask_b] = FIXED_WIDTH
+        return edge_colors.tolist(), line_widths.tolist() # Strip the pandas index to guarantee alignment
 
     def _create_segment_marker(self, ratio):
         x_cut = np.clip(2 * ratio - 1, -0.99, 0.99)
@@ -429,9 +432,37 @@ class PhaseDiagramPlotting3Phase:
         return verts
 
 if __name__ == "__main__":
-    list_of_files = glob.glob('Results/*.csv') 
-    if list_of_files:
-        latest_file = max(list_of_files, key=os.path.getctime)
-        PhaseDiagramPlotting3Phase(latest_file)
+    import os
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    target_dir = os.path.join(script_dir, "Results")
+    
+    print("Opening file dialog to select the data file manually...")
+    target_file = None
+    
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.attributes('-topmost', True) # Bring the dialog to the front
+        root.withdraw() # Hide the main empty Tkinter window
+        target_file = filedialog.askopenfilename(
+            initialdir=target_dir if os.path.exists(target_dir) else script_dir,
+            title="Select raw data CSV file for 2D Phase Diagram",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*"))
+        )
+    except Exception as e:
+        print(f"Could not open file dialog: {e}")
+        
+        # Fallback to the old behavior (latest file) if Tkinter fails
+        import glob
+        list_of_files = glob.glob(os.path.join(target_dir, '*.csv'))
+        if list_of_files:
+            target_file = max(list_of_files, key=os.path.getctime)
+            print(f"Fallback: using latest file: {target_file}")
+            
+    if target_file:
+        print(f"Using file: {target_file}")
+        PhaseDiagramPlotting3Phase(target_file)
     else:
-        print("No result files found in Results/ directory.")
+        print("No file selected. Exiting.")
