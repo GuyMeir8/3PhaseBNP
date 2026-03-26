@@ -1,2 +1,5 @@
-Results/
-Results_worth_saving/
+# Ignore CSV files in Results directories
+Results/*.csv
+Results_worth_saving/*.csv
+**/Results/**/*.csv
+**/Results*/**/*.csv

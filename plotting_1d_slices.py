@@ -257,7 +257,7 @@ if __name__ == "__main__":
         print(f"Using file: {target_file}")
         
         # Isotherm (Constant Temperature of 1100K, Sweeping Composition)
-        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1200.0, show_transitions=False)
+        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1100.0, show_transitions=False)
         
     else:
         print("No file selected or found. Exiting.")
