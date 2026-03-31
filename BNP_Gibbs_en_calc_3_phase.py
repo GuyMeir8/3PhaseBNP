@@ -532,107 +532,67 @@ class GibbsEnergyCalculator3Phase:
     ) -> np.ndarray:
         
         r_spheric = self._calculate_spheric_Janus_geo(n_mp, T_dependent_parameters)
-        
-        h_alpha_spheric = r_spheric[0] * (1 - r_spheric[2])
-        h_beta_spheric = r_spheric[1] * (1 + r_spheric[2])
 
-        st_alpha_beta = self._calculate_surface_tension(
-            xB_alpha=x_mp[1,0],
-            xB_beta=x_mp[1,1],
-            phase_alpha=phases[0],
-            phase_beta=phases[1],
-            T=T,
-            phases=phases,
-            T_dependent_parameters=T_dependent_parameters,
-        )
+        try:
+            r_i_max = 2 * r_spheric[0]
 
-        outer_phase = phases[2] if skin.exists else None
-        xB_outer = skin.xB if skin.exists else None
+            V_alpha =np.sum( n_mp[:,0] * T_dependent_parameters.v_mp[:,0])
+            V_beta = np.sum( n_mp[:,1] * T_dependent_parameters.v_mp[:,1])
+            st_alpha_beta = self._calculate_surface_tension(
+                xB_alpha=x_mp[1,0],
+                xB_beta=x_mp[1,1],
+                phase_alpha=phases[0],
+                phase_beta=phases[1],
+                T=T,
+                phases=phases,
+                T_dependent_parameters=T_dependent_parameters,
+            )
+            xB_outer = skin.xB if skin.exists else None
+            outer_phase = phases[2] if skin.exists else None
+            st_alpha_out = self._calculate_surface_tension(
+                xB_alpha=x_mp[1,0],
+                xB_beta=xB_outer,
+                phase_alpha=phases[0],
+                phase_beta=outer_phase,
+                T=T,
+                phases=phases,
+                T_dependent_parameters=T_dependent_parameters,
+            )
+            st_beta_out = self._calculate_surface_tension(
+                xB_alpha=x_mp[1,1],
+                xB_beta=xB_outer,
+                phase_alpha=phases[1],
+                phase_beta=outer_phase,
+                T=T,
+                phases=phases,
+                T_dependent_parameters=T_dependent_parameters,
+            )
+            A_out = lambda r_i, h : np.pi*(r_i**2 + h**2)
+            def calc_Janus_surface_en(r_i):
 
-        st_alpha_out = self._calculate_surface_tension(
-            xB_alpha=x_mp[1,0],
-            xB_beta=xB_outer,
-            phase_alpha=phases[0],
-            phase_beta=outer_phase,
-            T=T,
-            phases=phases,
-            T_dependent_parameters=T_dependent_parameters,
-        )
-
-        st_beta_out = self._calculate_surface_tension(
-            xB_alpha=x_mp[1,1],
-            xB_beta=xB_outer,
-            phase_alpha=phases[1],
-            phase_beta=outer_phase,
-            T=T,
-            phases=phases,
-            T_dependent_parameters=T_dependent_parameters,
-        )
-
-        a = st_alpha_out + st_beta_out + st_alpha_beta
-        b = lambda h2_alpha, h2_beta : (h2_alpha+h2_beta)*st_alpha_beta - (st_alpha_out - st_beta_out)*(h2_alpha-h2_beta)*st_alpha_beta
-        c = lambda h2_alpha, h2_beta : h2_alpha*h2_beta*(st_alpha_beta - st_alpha_out - st_beta_out)
-
-        V_alpha =np.sum( n_mp[:,0] * T_dependent_parameters.v_mp[:,0])
-        V_beta = np.sum( n_mp[:,1] * T_dependent_parameters.v_mp[:,1])
-
-        def _calc_r2_i_roots(h_alpha, h_beta):
-            h2_alpha = h_alpha**2
-            h2_beta = h_beta**2
-            b_curr = b(h2_alpha, h2_beta)
-            c_curr = c(h2_alpha, h2_beta)
-            r2_i = np.roots([a, b_curr, c_curr])
-            return r2_i
-
-        def equations(vars):
-            h_alpha, h_beta = vars
-            r2_i =_calc_r2_i_roots(h_alpha, h_beta)
-            r2_i = self.real_from_roots(r2_i)
-            if len(r2_i) == 0:
-                return [1/self.eps, 1/self.eps]
+                h_alpha = self._calc_h_from_Janus_r_i(r_i, V_alpha)
+                h_beta = self._calc_h_from_Janus_r_i(r_i, V_beta)
+                A_alpha_out = A_out(r_i, h_alpha)
+                A_beta_out = A_out(r_i, h_beta)
+                A_int = np.pi*r_i**2
+                return st_alpha_out*A_alpha_out + st_beta_out*A_beta_out + st_alpha_beta*A_int
             
-            # Pick the root that corresponds to a radius closest to the spheric approximation
-            # This prevents jumping to unphysical branches of the solution
-            target_r2 = (r_spheric[0] * sqrt(1 - r_spheric[2]**2))**2
-            best_idx = np.argmin(np.abs(r2_i - target_r2))
-            r2_val = r2_i[best_idx]
-            
-            eq_def = lambda h, V : np.pi*h*(3*r2_val + h**2) / 6 - V
-            eq_alpha = eq_def(h_alpha, V_alpha)
-            eq_beta = eq_def(h_beta, V_beta)
-            return [eq_alpha, eq_beta]
-        
-        sol, _, ier, _ = optimize.fsolve(equations, [h_alpha_spheric, h_beta_spheric], full_output=True)
-        
-        if ier != 1: return r_spheric
-        
-        h_alpha, h_beta = sol
-        
-        a_2_final = _calc_r2_i_roots(h_alpha, h_beta)
-        a_2_final = self.real_from_roots(a_2_final)
 
-        if len(a_2_final) != 1: return r_spheric
-        a_final = sqrt(a_2_final[0])
+            r_i_final = optimize.minimize_scalar(calc_Janus_surface_en, bounds=(self.eps, r_i_max), method='bounded').x
 
-        # Correct formula for Sphere Radius R given cap height h and base radius a:
-        # R = (h^2 + a^2) / (2h)
-        # Guard against h=0 to prevent division by zero
-        if h_alpha < self.eps or h_beta < self.eps: return r_spheric
+            # Recalculate geometric parameters using the optimal interface radius
+            h_alpha_final = self._calc_h_from_Janus_r_i(r_i_final, V_alpha)
+            h_beta_final = self._calc_h_from_Janus_r_i(r_i_final, V_beta)
 
-        r_alpha = (h_alpha**2 + a_final**2) / (2 * h_alpha)
-        r_beta = (h_beta**2 + a_final**2) / (2 * h_beta)
+            r_alpha_final = (h_alpha_final**2 + r_i_final**2) / (2 * h_alpha_final)
+            r_beta_final = (h_beta_final**2 + r_i_final**2) / (2 * h_beta_final)
+            cos_theta_alpha_final = 1.0 - h_alpha_final / r_alpha_final
+            cos_theta_beta_final = 1.0 - h_beta_final / r_beta_final
 
-        # SANITY CHECK: If force-balance solver diverged to huge radii (flat interface) 
-        # or returned NaNs, revert to the robust spheric approximation.
-        if (np.isnan(r_alpha) or np.isnan(r_beta) or 
-            r_alpha > 10 * r_spheric[0] or r_beta > 10 * r_spheric[1]):
-            return r_spheric
+            return np.array([r_alpha_final, r_beta_final, cos_theta_alpha_final, cos_theta_beta_final])
 
-        # Correct formula for cos(theta): h = R(1 - cos_theta) -> cos_theta = 1 - h/R
-        cos_theta_alpha = 1.0 - h_alpha / r_alpha
-        cos_theta_beta = 1.0 - h_beta / r_beta
-        
-        return np.array([r_alpha, r_beta, cos_theta_alpha, cos_theta_beta])
+        except (ValueError, OverflowError, ZeroDivisionError) as e:             # If optimization fails, fallback to spheric approximation
+             raise ValueError(f"Janus geometry optimization failed: {e}")
 
     def _calculate_spheric_Janus_geo(self, n_mp, T_dependent_parameters):
         V_alpha = np.sum(n_mp[:,0] * T_dependent_parameters.v_mp[:,0])
@@ -675,7 +635,12 @@ class GibbsEnergyCalculator3Phase:
         r_beta = ((3 * V_beta) / (np.pi * (2 - cos_theta_alpha) * (1 + cos_theta_alpha) ** 2)) ** (1/3)
         
         return np.array([r_alpha, r_beta, cos_theta_alpha, -cos_theta_alpha])
-        
+    
+    def _calc_h_from_Janus_r_i(self, r_i, V):
+        for_roots = [1, 0, 3*r_i**2, -6*V/np.pi]
+        h_alpha = self.real_from_roots(np.roots(for_roots))
+        return h_alpha[0]
+    
     def _calc_G_ideal(
             self,
             n_mp: np.ndarray,
