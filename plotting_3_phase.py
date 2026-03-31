@@ -74,7 +74,7 @@ class PhaseDiagramPlotting3Phase:
         cleaned_dfs = []
         for n in self.df_min["n_total"].unique():
             subset = self.df_min[self.df_min["n_total"] == n].copy()
-            cleaned_subset = self.remove_speckles_from_slice(subset, passes=3)
+            cleaned_subset = self.remove_speckles_from_slice(subset, passes=5)
             cleaned_dfs.append(cleaned_subset)
         self.df_min = pd.concat(cleaned_dfs, ignore_index=True)
 
@@ -125,81 +125,110 @@ class PhaseDiagramPlotting3Phase:
         
         return f"{geo}{suffix}__{a}+{b}"
 
-    def remove_speckles_from_slice(self, df_slice, passes=1):
+    def remove_speckles_from_slice(self, df_slice, passes=5):
         """
         Removes isolated speckles using a grid-based cellular automaton approach.
         Updates Geometry, PhaseAlpha, PhaseBeta, HasSkin based on the smoothed label.
         """
         try:
-            # 1. Pivot to Grid
-            # Ensure duplicates are handled (though df_min should be unique per T, xB)
+            # 1. Create a simplified label for comparison, based only on Geometry and Phases.
+            # This is what "Difference are either - phases, geometry" means.
+            def make_comparison_label(row):
+                geo = row["Geometry"]
+                # Strip composition tags like (Ag) from phases for comparison
+                pa = str(row["PhaseAlpha"]).split("(")[0]
+                pb = str(row["PhaseBeta"]).split("(")[0]
+                return f"{geo}_{pa}_{pb}"
+            
+            df_slice['comparison_label'] = df_slice.apply(make_comparison_label, axis=1)
+
+            # 2. Create two grids: one with the full, detailed label for updating,
+            #    and one with the simplified label for comparison.
             try:
-                grid_df = df_slice.pivot(index="T", columns="xB_total", values="phase_label")
-            except ValueError:
-                grid_df = df_slice.pivot_table(index="T", columns="xB_total", values="phase_label", aggfunc='first')
+                grid_df_full = df_slice.pivot(index="T", columns="xB_total", values="phase_label")
+                grid_df_comparison = df_slice.pivot(index="T", columns="xB_total", values="comparison_label")
+            except ValueError: # Handle potential duplicates if any slip through
+                grid_df_full = df_slice.pivot_table(index="T", columns="xB_total", values="phase_label", aggfunc='first')
+                grid_df_comparison = df_slice.pivot_table(index="T", columns="xB_total", values="comparison_label", aggfunc='first')
 
-            grid = grid_df.values
-            rows, cols = grid.shape
+            full_label_grid = grid_df_full.values
+            comparison_grid = grid_df_comparison.values
+            rows, cols = comparison_grid.shape
 
-            # 2. Cellular Automaton Smoothing
+            # 3. Cellular Automaton Smoothing
             for i in range(passes):
-                new_grid = grid.copy()
+                new_full_label_grid = full_label_grid.copy()
+                new_comparison_grid = comparison_grid.copy()
                 changes_made = 0
+
                 for r in range(rows):
                     for c in range(cols):
-                        current_val = grid[r, c]
-                        if pd.isna(current_val): continue
+                        current_comparison_val = comparison_grid[r, c]
+                        if pd.isna(current_comparison_val): continue
                         
-                        valid_neighbors = []
-                        neighbors_matching_self = 0
+                        neighbor_comparison_vals = []
+                        neighbor_full_labels = {} # Map comparison label to a representative full label
                         
                         # Check 8 neighbors
                         for dr in [-1, 0, 1]:
                             for dc in [-1, 0, 1]:
                                 if dr == 0 and dc == 0: continue
                                 nr, nc = r + dr, c + dc
-                                
+                                 
                                 if 0 <= nr < rows and 0 <= nc < cols:
-                                    val = grid[nr, nc]
-                                    if pd.notna(val):
-                                        valid_neighbors.append(val)
-                                        if val == current_val:
-                                            neighbors_matching_self += 1
+                                    comp_val = comparison_grid[nr, nc]
+                                    if pd.notna(comp_val):
+                                        neighbor_comparison_vals.append(comp_val)
+                                        if comp_val not in neighbor_full_labels:
+                                            neighbor_full_labels[comp_val] = full_label_grid[nr, nc]
                         
-                        if not valid_neighbors: continue
+                        if not neighbor_comparison_vals: continue
                         
-                        # Rule: If isolated (<= 1 matching neighbor), adopt majority neighbor
-                        # Stricter for edges (<= 0)
+                        neighbors_matching_self = neighbor_comparison_vals.count(current_comparison_val)
+                        valid_neighbors = len(neighbor_comparison_vals)
+                        
+                        # 4. Apply new speckle rules from user request
                         is_edge = (r == 0) or (r == rows - 1) or (c == 0) or (c == cols - 1)
-                        limit = 0 if is_edge else 1
+                        is_speckle = False
+
+                        if is_edge:
+                            # Edge case: different from 3+ of 5 neighbors (i.e., matches <= 2).
+                            # This is a ratio of 60% different. We check if the point matches <= 40% of its neighbors.
+                            if valid_neighbors > 0 and neighbors_matching_self <= int(0.4 * valid_neighbors):
+                                is_speckle = True
+                        else:
+                            # Normal case: different from 6+ of 8 neighbors (i.e., matches <= 2).
+                            if neighbors_matching_self <= 2:
+                                is_speckle = True
                         
-                        if neighbors_matching_self <= limit:
+                        if is_speckle:
                             from collections import Counter
-                            counts = Counter(valid_neighbors)
-                            most_common_label, _ = counts.most_common(1)[0]
+                            counts = Counter(neighbor_comparison_vals)
+                            most_common_comparison_label, _ = counts.most_common(1)[0]
                             
-                            if most_common_label != current_val:
-                                new_grid[r, c] = most_common_label
+                            if most_common_comparison_label != current_comparison_val:
+                                # Find the corresponding full label from a neighbor
+                                new_full_label = neighbor_full_labels[most_common_comparison_label]
+                                
+                                new_full_label_grid[r, c] = new_full_label
+                                new_comparison_grid[r, c] = most_common_comparison_label
                                 changes_made += 1
                 
-                grid = new_grid
+                full_label_grid = new_full_label_grid
+                comparison_grid = new_comparison_grid
                 if changes_made == 0:
                     break
 
-            # 3. Map back to DataFrame
-            cleaned_flat = pd.DataFrame(grid, index=grid_df.index, columns=grid_df.columns).reset_index().melt(id_vars="T", value_name="new_phase_label")
-            
-            # Merge with original slice
+            # 5. Map the updated full labels back to the DataFrame
+            cleaned_flat = pd.DataFrame(full_label_grid, index=grid_df_full.index, columns=grid_df_full.columns).reset_index().melt(id_vars="T", value_name="new_phase_label")
             df_merged = pd.merge(df_slice, cleaned_flat, on=["T", "xB_total"], how="left")
             
-            # Identify rows that changed
             mask_changed = df_merged["phase_label"] != df_merged["new_phase_label"]
-            change_count = mask_changed.sum()
             
-            if change_count > 0:
+            if mask_changed.sum() > 0:
                 df_merged.loc[mask_changed, "phase_label"] = df_merged.loc[mask_changed, "new_phase_label"]
                 
-                # Update dependent columns for changed rows
+                # Update dependent columns (Geometry, Phases, etc.) for the changed rows
                 for idx in df_merged[mask_changed].index:
                     new_label = df_merged.loc[idx, "phase_label"]
                     geo, pa, pb, skin, xb_s = self._parse_label_to_cols(new_label)
@@ -211,7 +240,8 @@ class PhaseDiagramPlotting3Phase:
                     if skin:
                         df_merged.loc[idx, "xB_skin"] = xb_s
             
-            df_merged.drop(columns=["new_phase_label"], inplace=True)
+            # Clean up temporary columns
+            df_merged.drop(columns=["new_phase_label", "comparison_label"], inplace=True)
             return df_merged
             
         except Exception as e:

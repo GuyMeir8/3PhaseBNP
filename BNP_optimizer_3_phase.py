@@ -2,7 +2,10 @@ import numpy as np
 from scipy.optimize import minimize, differential_evolution, NonlinearConstraint
 from dataclasses import dataclass
 from typing import Tuple, List, Optional
-
+import warnings
+warnings.filterwarnings("ignore", message="delta_grad == 0.0") # Suppress warnings from failed calculations
+warnings.filterwarnings("ignore", message="differential evolution didn't find a solution.*") # Suppress expected constraint warnings
+warnings.filterwarnings("ignore", message="Singular Jacobian matrix.*") # Suppress SLSQP/trust-constr fallback warnings
 from configurations_3_phase import ThreePhaseConfiguration
 from BNP_Gibbs_en_calc_3_phase import GibbsEnergyCalculator3Phase
 
@@ -196,10 +199,10 @@ class BNPOptimizer3Phase:
                 bounds=bounds,
                 constraints=de_constraints,
                 strategy='best1bin',
-                maxiter=50,       # Good balance for this dimensionality
-                popsize=15,       # Population per parameter
-                tol=0.001,
-                polish=False,     # We will polish manually to handle constraints better
+                maxiter=100,       # Good balance for this dimensionality
+                popsize=30,       # Population per parameter
+                tol=1e-5,
+                polish=True,     # We will polish manually to handle constraints better
                 disp=False
             )
 
