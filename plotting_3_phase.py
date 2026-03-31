@@ -289,10 +289,12 @@ class PhaseDiagramPlotting3Phase:
             row["Geometry"] = "SinglePhase"
             row["PhaseAlpha"] = original_beta_phase
             row["PhaseBeta"] = "None"
+            row["HasSkin"] = False   
+            row["xB_skin"] = np.nan
             return row
         
         # If Shell (Beta) is tiny -> SinglePhase Alpha
-        if (nb / n_tot) < THRESHOLD:
+        if (nb / n_tot) < THRESHOLD and n_tot > 1.0-1e-6:
             row["Geometry"] = "SinglePhase"
             row["PhaseBeta"] = "None"
             return row
