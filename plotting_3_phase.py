@@ -11,15 +11,17 @@ import os
 import datetime
 
 class PhaseDiagramPlotting3Phase:
-    def __init__(self, file_name, save_dir=None, timestamp=None, plot_title_suffix="", auto_show=True):
+    def __init__(self, file_name, save_dir=None, timestamp=None, plot_title_suffix="", auto_show=True, apply_moving_average=True):
         # save_dir: optional directory to save figures to. If None, figures are only displayed.
         # timestamp: optional timestamp string to include in saved filenames
         
         self.auto_show = auto_show
         self.plot_title_suffix = plot_title_suffix
         self.file_name = file_name
+        self.apply_moving_average = apply_moving_average
         if save_dir is None:
             self.save_dir = "Results"
+        
         else:
             self.save_dir = save_dir
 
@@ -138,7 +140,8 @@ class PhaseDiagramPlotting3Phase:
                 # Strip composition tags like (Ag) from phases for comparison
                 pa = str(row["PhaseAlpha"]).split("(")[0]
                 pb = str(row["PhaseBeta"]).split("(")[0]
-                return f"{geo}_{pa}_{pb}"
+                skin = "_Skin" if row["HasSkin"] else "_NoSkin"
+                return f"{geo}_{pa}_{pb}{skin}"
             
             df_slice['comparison_label'] = df_slice.apply(make_comparison_label, axis=1)
 
@@ -187,25 +190,36 @@ class PhaseDiagramPlotting3Phase:
                         neighbors_matching_self = neighbor_comparison_vals.count(current_comparison_val)
                         valid_neighbors = len(neighbor_comparison_vals)
                         
-                        # 4. Apply new speckle rules from user request
-                        is_edge = (r == 0) or (r == rows - 1) or (c == 0) or (c == cols - 1)
+                        # 4. Morphological Filter & Speckle Removal
+                        from collections import Counter
+                        counts = Counter(neighbor_comparison_vals)
+                        most_common_comparison_label, max_count = counts.most_common(1)[0]
+                        
                         is_speckle = False
+                        is_edge = (r == 0) or (r == rows - 1) or (c == 0) or (c == cols - 1)
 
                         if is_edge:
-                            # Edge case: different from 3+ of 5 neighbors (i.e., matches <= 2).
-                            # This is a ratio of 60% different. We check if the point matches <= 40% of its neighbors.
                             if valid_neighbors > 0 and neighbors_matching_self <= int(0.4 * valid_neighbors):
                                 is_speckle = True
                         else:
-                            # Normal case: different from 6+ of 8 neighbors (i.e., matches <= 2).
-                            if neighbors_matching_self <= 2:
+                            # Rule 1: True Speckle (Isolated noise, 3 or fewer friends)
+                            if neighbors_matching_self <= 3:
                                 is_speckle = True
-                        
-                        if is_speckle:
-                            from collections import Counter
-                            counts = Counter(neighbor_comparison_vals)
-                            most_common_comparison_label, _ = counts.most_common(1)[0]
                             
+                            # Rule 2: Morphological Boundary Smoothing ("The Ironing Rule")
+                            # If a point is on a jagged staircase boundary, and a single OTHER phase 
+                            # surrounds it on 5 or more sides, flip it to smooth the diagonal line.
+                            elif max_count >= 5 and most_common_comparison_label != current_comparison_val:
+                                is_speckle = True
+
+                            # Rule 3: Liquid Surface Segregation Bias (Tie-Breaker)
+                            # The energy difference between uniform liquid and a segregated liquid shell is microscopic.
+                            # Bias the voting to allow the physically segregated state to fill in the 50/50 noise.
+                            elif "SinglePhase_Liquid" in current_comparison_val and "Core_Shell_Liquid_Liquid" in most_common_comparison_label:
+                                if max_count >= 3: 
+                                    is_speckle = True
+
+                        if is_speckle:
                             if most_common_comparison_label != current_comparison_val:
                                 # Find the corresponding full label from a neighbor
                                 new_full_label = neighbor_full_labels[most_common_comparison_label]
@@ -331,6 +345,7 @@ class PhaseDiagramPlotting3Phase:
             
         return row
 
+
     def plot_all_phase_diagrams_per_n_total(self):
         df_plot = self.df_min
         
@@ -339,8 +354,8 @@ class PhaseDiagramPlotting3Phase:
             if subset.empty: continue
             
             fig = plt.figure(figsize=(12, 8))
-            base_size = 45 # Slightly larger to help skin visibility
-            MIN_VISIBLE_RATIO = 0.2 # Ensures a phase takes up at least 20% of the marker area
+            base_size = 60 # Standardize the base size
+            MIN_VISIBLE_RATIO = 0.2 
 
             # 1. Single Phase
             df_single = subset[subset["Geometry"] == "SinglePhase"].copy()
@@ -349,57 +364,63 @@ class PhaseDiagramPlotting3Phase:
                     "Liquid": self.COLORS["Single_Liquid"],
                     "FCC": self.COLORS["Single_FCC"]
                 })
-                edge_colors, line_widths = self._get_skin_styles(df_single)
-                plt.scatter(
-                    df_single["xB_total"], df_single["T"],
-                    c=colors, edgecolors=edge_colors, linewidths=line_widths,
-                    s=base_size, marker='o', label="Single Phase"
-                )
+                plt.scatter(df_single["xB_total"], df_single["T"], c=colors, edgecolors='none', s=base_size, marker='o', label="Single Phase", zorder=1)
 
             # 2. Core-Shell
             df_cs = subset[subset["Geometry"] == "Core_Shell"].copy()
             if not df_cs.empty:
                 df_cs["alpha_ratio"] = df_cs["n_alpha"] / df_cs["n_total"]
                 df_cs["alpha_ratio"] = df_cs["alpha_ratio"].fillna(0)
+                
+                if self.apply_moving_average:
+                    df_cs = df_cs.sort_values(by=["T", "xB_total"])
+                    df_cs["alpha_ratio"] = df_cs.groupby("T")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
+                    df_cs = df_cs.sort_values(by=["xB_total", "T"])
+                    df_cs["alpha_ratio"] = df_cs.groupby("xB_total")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
+                    df_cs = df_cs.sort_values(by=["T", "xB_total"])
+                
                 plot_alpha_ratio = df_cs["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 c_alpha = self._get_phase_colors(df_cs["PhaseAlpha"], "Alpha")
                 c_beta = self._get_phase_colors(df_cs["PhaseBeta"], "Beta")
-                edge_colors, line_widths = self._get_skin_styles(df_cs)
 
-                plt.scatter(
-                    df_cs["xB_total"], df_cs["T"], c=c_beta, edgecolors=edge_colors,
-                    linewidths=line_widths, s=base_size, marker='o'
-                )
+                plt.scatter(df_cs["xB_total"], df_cs["T"], c=c_beta, edgecolors='none', s=base_size, marker='o', zorder=1)
                 s_inner = base_size * plot_alpha_ratio
-                plt.scatter(
-                    df_cs["xB_total"], df_cs["T"], c=c_alpha, edgecolors='none',
-                    s=s_inner, marker='o', label="Core-Shell"
-                )
+                plt.scatter(df_cs["xB_total"], df_cs["T"], c=c_alpha, edgecolors='none', s=s_inner, marker='o', label="Core-Shell", zorder=2)
 
             # 3. Janus
             df_janus = subset[subset["Geometry"] == "Janus"].copy()
             if not df_janus.empty:
                 df_janus["alpha_ratio"] = df_janus["n_alpha"] / df_janus["n_total"]
+                df_janus["alpha_ratio"] = df_janus["alpha_ratio"].fillna(0)
+                
+                if self.apply_moving_average:
+                    df_janus = df_janus.sort_values(by=["T", "xB_total"])
+                    df_janus["alpha_ratio"] = df_janus.groupby("T")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
+                    df_janus = df_janus.sort_values(by=["xB_total", "T"])
+                    df_janus["alpha_ratio"] = df_janus.groupby("xB_total")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
+                    df_janus = df_janus.sort_values(by=["T", "xB_total"])
+
                 plot_alpha_ratio = df_janus["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 c_alpha = self._get_phase_colors(df_janus["PhaseAlpha"], "Alpha")
                 c_beta = self._get_phase_colors(df_janus["PhaseBeta"], "Beta")
-                edge_colors, line_widths = self._get_skin_styles(df_janus)
 
-                plt.scatter(
-                    df_janus["xB_total"], df_janus["T"], c=c_beta, edgecolors=edge_colors,
-                    linewidths=line_widths, s=base_size, marker='o'
-                )
-                df_janus["ratio_bin"] = (plot_alpha_ratio * 20).round() / 20
-                for ratio in df_janus["ratio_bin"].unique():
-                    mask = df_janus["ratio_bin"] == ratio
-                    chunk = df_janus[mask]
-                    marker_verts = self._create_segment_marker(ratio)
+                plt.scatter(df_janus["xB_total"], df_janus["T"], c=c_beta, edgecolors='none', s=base_size, marker='o', zorder=1)
+                for i in range(len(df_janus)):
+                    ratio = plot_alpha_ratio.iloc[i]
+                    verts = self._create_segment_marker(ratio)
                     plt.scatter(
-                        chunk["xB_total"], chunk["T"], c=c_alpha[mask], edgecolors='none',
-                        s=base_size, marker=marker_verts,
-                        label="Janus" if ratio == df_janus["ratio_bin"].unique()[0] else ""
+                        df_janus["xB_total"].iloc[i], df_janus["T"].iloc[i],
+                        c=[c_alpha.iloc[i]], edgecolors='none',
+                        s=base_size, marker=verts, zorder=2
                     )
 
+            # --- THE NEW SKIN OVERLAY LAYER ---
+            df_skin = subset[subset["HasSkin"] == True].copy()
+            if not df_skin.empty:
+                skin_colors = np.where(df_skin["xB_skin"] < 0.5, self.COLORS["Skin_A"], self.COLORS["Skin_B"])
+                # Note: facecolors='none' creates an empty ring, zorder=10 forces it to the top
+                plt.scatter(df_skin["xB_total"], df_skin["T"], facecolors='none', edgecolors=skin_colors, s=base_size, linewidths=1.5, zorder=10)
+                    
             title = f"Phase Diagram (n={n:.1e})"
             if self.plot_title_suffix:
                 title += f" {self.plot_title_suffix}"
@@ -415,8 +436,9 @@ class PhaseDiagramPlotting3Phase:
                 Patch(facecolor=self.COLORS['Beta_FCC'], label='Beta (Shell/Back): FCC'),
                 Patch(facecolor=self.COLORS['Alpha_Liquid'], label='Alpha (Core/Seg): Liquid'),
                 Patch(facecolor=self.COLORS['Beta_Liquid'], label='Beta (Shell/Back): Liquid'),
-                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=1.0, markersize=10),
-                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='white', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=1.0, markersize=10),
+                # Updated Legend for the ring style
+                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=2.0, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=2.0, markersize=10),
                 Line2D([0], [0], marker=self._create_segment_marker(0.3), color='w', label='Janus: Alpha (Segment) / Beta (Back)', markerfacecolor='gray', markeredgecolor='black', markersize=12),
             ]
             
@@ -435,7 +457,7 @@ class PhaseDiagramPlotting3Phase:
                 plt.show()
             else:
                 plt.close(fig)
-                
+
     def _get_phase_colors(self, phase_series, role):
         return phase_series.map({"FCC": self.COLORS[f"{role}_FCC"], "Liquid": self.COLORS[f"{role}_Liquid"]})
 
@@ -444,14 +466,16 @@ class PhaseDiagramPlotting3Phase:
         line_widths = pd.Series([0.0] * len(df), index=df.index)
         has_skin = df["HasSkin"]
         if has_skin.any():
-            FIXED_WIDTH = 1.0
+            # --- FIX 4a: Increase line width drastically ---
+            FIXED_WIDTH = 2.5 # Changed from 1.0 to 2.5
+            
             mask_a = has_skin & (df["xB_skin"] < 0.5)
             edge_colors.loc[mask_a] = self.COLORS["Skin_A"]
             line_widths.loc[mask_a] = FIXED_WIDTH
             mask_b = has_skin & (df["xB_skin"] >= 0.5)
             edge_colors.loc[mask_b] = self.COLORS["Skin_B"]
             line_widths.loc[mask_b] = FIXED_WIDTH
-        return edge_colors.tolist(), line_widths.tolist() # Strip the pandas index to guarantee alignment
+        return edge_colors.tolist(), line_widths.tolist()
 
     def _create_segment_marker(self, ratio):
         x_cut = np.clip(2 * ratio - 1, -0.99, 0.99)
@@ -465,6 +489,9 @@ class PhaseDiagramPlotting3Phase:
 
 if __name__ == "__main__":
     import os
+    
+    # --- USER SETTINGS ---
+    APPLY_MOVING_AVERAGE = True  # Toggle this to True or False to enable/disable smoothing
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     target_dir = os.path.join(script_dir, "Results")
@@ -495,6 +522,6 @@ if __name__ == "__main__":
             
     if target_file:
         print(f"Using file: {target_file}")
-        PhaseDiagramPlotting3Phase(target_file)
+        PhaseDiagramPlotting3Phase(target_file, apply_moving_average=APPLY_MOVING_AVERAGE)
     else:
         print("No file selected. Exiting.")

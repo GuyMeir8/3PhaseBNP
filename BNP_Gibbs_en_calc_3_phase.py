@@ -730,7 +730,15 @@ class GibbsEnergyCalculator3Phase:
         if abs(y_max) < tol: return (max_val, True)
 
         if y_min * y_max > 0:
-            return (initial_guess, was_successful)
+            # Extreme surface segregation: the driving force points entirely toward one component.
+            # Instead of failing, we pin the composition to the boundary it is being driven toward.
+            if y_min > 0 and y_max > 0:
+                # f(x) = x - update(x) > 0 implies update(x) < x everywhere. 
+                # The math is driving the composition lower (towards Silver).
+                return (min_val, True)
+            else:
+                # update(x) > x everywhere. The math is driving towards Copper.
+                return (max_val, True)
 
         low = min_val
         high = max_val

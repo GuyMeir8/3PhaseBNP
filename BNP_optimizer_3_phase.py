@@ -199,9 +199,9 @@ class BNPOptimizer3Phase:
                 bounds=bounds,
                 constraints=de_constraints,
                 strategy='best1bin',
-                maxiter=100,       # Good balance for this dimensionality
-                popsize=30,       # Population per parameter
-                tol=1e-5,
+                maxiter=500,       # Good balance for this dimensionality
+                popsize=100,       # Population per parameter
+                tol=1e-8,
                 polish=True,     # We will polish manually to handle constraints better
                 disp=False
             )
@@ -219,7 +219,7 @@ class BNPOptimizer3Phase:
                         method='SLSQP', 
                         bounds=bounds, 
                         constraints=cons, 
-                        tol=1e-10
+                        tol=1e-13
                     )
                     if res_polish.success and res_polish.fun < best_g_per_mole:
                         best_g_per_mole = res_polish.fun

@@ -5,7 +5,7 @@ import os
 import glob
 
 class PhaseSlicePlotter:
-    def __init__(self, file_name, independent_var, constant_val, n_total=None, save_dir="Results", show_transitions=False):
+    def __init__(self, file_name, independent_var, constant_val, n_total=None, save_dir="Results", show_transitions=False, apply_moving_average=True, moving_average_window=5):
         """
         Generates 1D slice plots of phase fractions and compositions.
         
@@ -21,6 +21,8 @@ class PhaseSlicePlotter:
         self.independent_var = independent_var.lower()
         self.constant_val = constant_val
         self.save_dir = save_dir
+        self.apply_moving_average = apply_moving_average
+        self.moving_average_window = moving_average_window
         self.show_transitions = show_transitions
         
         self.df = pd.read_csv(file_name)
@@ -74,7 +76,10 @@ class PhaseSlicePlotter:
         else:
             raise ValueError("independent_var must be 'temperature' or 'composition'")
             
-        self.df_plot = self.df_plot.sort_values(by=self.x_col)
+        self.df_plot = self.df_plot.sort_values(by=self.x_col).reset_index(drop=True)
+        
+        # Clean up trace/phantom phases before calculating fractions
+        self.df_plot = self.df_plot.apply(self.enforce_phase_threshold, axis=1)
         
         self.prepare_plot_data()
         self.plot()
@@ -92,31 +97,71 @@ class PhaseSlicePlotter:
         self.constant_val = closest_const
         self.df_plot = self.df_plot[abs(self.df_plot[self.const_col] - self.constant_val) < 1e-4]
 
+    def enforce_phase_threshold(self, row):
+        # Treat any phase making up less than 0.5% of the nanoparticle as non-existent
+        THRESHOLD = 0.005 
+        
+        if row["Geometry"] == "SinglePhase":
+            return row
+        
+        n_tot = row["n_total"]
+        na = row["n_alpha"]
+        nb = row["n_beta"]
+        
+        if pd.isna(na) or pd.isna(nb) or n_tot == 0:
+            return row
+
+        # If Core (Alpha) is tiny -> convert to SinglePhase Beta
+        if (na / n_tot) < THRESHOLD:
+            row["Geometry"] = "SinglePhase"
+            row["PhaseAlpha"] = row["PhaseBeta"]
+            row["PhaseBeta"] = "None"
+            row["HasSkin"] = False   
+            row["xB_skin"] = np.nan
+            row["n_alpha"] = n_tot   # <--- THE FIX: Transfer the moles
+            row["n_beta"] = np.nan   # <--- THE FIX: Clear the old slot
+            return row
+        
+        # If Shell (Beta) is tiny -> convert to SinglePhase Alpha
+        if (nb / n_tot) < THRESHOLD:
+            row["Geometry"] = "SinglePhase"
+            row["PhaseBeta"] = "None"
+            row["HasSkin"] = False   # Clean up residual skin data
+            row["xB_skin"] = np.nan
+            row["n_alpha"] = n_tot   # <--- THE FIX: Ensure moles are in alpha
+            row["n_beta"] = np.nan
+            return row
+            
+        return row
+
     def prepare_plot_data(self):
         if self.df_plot.empty: return
         
-        # Calculate derived fractions
+        # --- FIX    1: Correctly Assign SinglePhase Moles ---
         def calc_fractions(row):
             nt = row['n_total']
             
-            # SinglePhase usually has NaN for n_beta and n_alpha might just be n_total
-            if row['Geometry'] == 'SinglePhase' or pd.isna(row['n_alpha']):
-                na = nt
-                nb = np.nan
+            if row['Geometry'] == 'SinglePhase':
+                # Check if the solver dumped the moles into the 'beta' slot
+                if pd.notna(row['n_beta']) and row['n_beta'] > (nt * 0.5):
+                    na = np.nan
+                    nb = nt
+                else:
+                    na = nt
+                    nb = np.nan
+                ns = np.nan
             else:
                 na = row['n_alpha']
-                nb = row['n_beta'] if not pd.isna(row['n_beta']) else np.nan
-                
-            has_skin = row['HasSkin']
-            if has_skin:
-                ns = nt - na - (nb if pd.notna(nb) else 0.0)
-            else:
-                ns = np.nan
+                nb = row['n_beta'] if pd.notna(row['n_beta']) else np.nan
+                if row['HasSkin']:
+                    ns = nt - (na if pd.notna(na) else 0.0) - (nb if pd.notna(nb) else 0.0)
+                else:
+                    ns = np.nan
             
             # Prevent tiny negative values due to float precision
-            if pd.notna(na): na = max(0.0, na)
-            if pd.notna(nb): nb = max(0.0, nb)
-            if pd.notna(ns): ns = max(0.0, ns)
+            na = max(0.0, na) if pd.notna(na) else np.nan
+            nb = max(0.0, nb) if pd.notna(nb) else np.nan
+            ns = max(0.0, ns) if pd.notna(ns) else np.nan
             
             f_a = na / nt if pd.notna(na) else np.nan
             f_b = nb / nt if pd.notna(nb) else np.nan
@@ -126,7 +171,6 @@ class PhaseSlicePlotter:
             
         self.df_plot[['f_alpha', 'f_beta', 'f_skin']] = self.df_plot.apply(calc_fractions, axis=1)
         
-        # Ensure compositions correctly show empty arrays when they don't apply
         def clean_compositions(row):
             if row['Geometry'] == 'SinglePhase':
                 row['xB_beta'] = np.nan
@@ -136,7 +180,16 @@ class PhaseSlicePlotter:
             
         self.df_plot = self.df_plot.apply(clean_compositions, axis=1)
         
-        # State label for transitions
+        # --- Smoothing Logic ---
+        if self.apply_moving_average:
+            cols_to_smooth = ['f_alpha', 'f_beta', 'f_skin', 'xB_alpha', 'xB_beta', 'xB_skin']
+            for col in cols_to_smooth:
+                if col in self.df_plot.columns:
+                    self.df_plot[col] = self.df_plot[col].rolling(
+                        window=self.moving_average_window, 
+                        center=True, 
+                        min_periods=1
+                    ).mean()
         def get_state(row):
             geo = row["Geometry"]
             if geo == "SinglePhase":
@@ -146,6 +199,18 @@ class PhaseSlicePlotter:
                 return f"{geo} ({row['PhaseAlpha']}/{row['PhaseBeta']}){skin_str}"
                 
         self.df_plot['State'] = self.df_plot.apply(get_state, axis=1)
+
+        # --- FIX 2: Clean up Identical Compositions ---
+        # Find rows where xB_alpha and xB_beta are basically the same (e.g., difference < 0.005)
+        mask_identical = (self.df_plot['xB_alpha'] - self.df_plot['xB_beta']).abs() < 0.005
+        
+        # For those rows, "hide" the beta line so they don't overlap
+        self.df_plot.loc[mask_identical, 'xB_beta'] = np.nan
+        
+        # If they are identical in composition, it's effectively one phase visually. 
+        # Force the fraction graph to show 100% alpha to clean up the plot.
+        self.df_plot.loc[mask_identical, 'f_alpha'] = 1.0
+        self.df_plot.loc[mask_identical, 'f_beta'] = np.nan
         
     def plot(self):
         if self.df_plot.empty:
@@ -256,8 +321,13 @@ if __name__ == "__main__":
     if target_file:
         print(f"Using file: {target_file}")
         
+        # --- USER SETTINGS ---
+        APPLY_MOVING_AVERAGE = True  # Toggle this to True or False to enable/disable smoothing
+        SMOOTHING_WINDOW = 9         # Adjust the window size for the moving average
+        SHOW_TRANSITIONS = True      # Toggle to show vertical lines and labels for phase/geometry changes
+        
         # Isotherm (Constant Temperature of 1100K, Sweeping Composition)
-        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1100.0, show_transitions=False)
+        PhaseSlicePlotter(target_file, independent_var='composition', constant_val=1100.0, show_transitions=SHOW_TRANSITIONS, apply_moving_average=APPLY_MOVING_AVERAGE, moving_average_window=SMOOTHING_WINDOW)
         
     else:
         print("No file selected or found. Exiting.")

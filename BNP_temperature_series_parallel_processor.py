@@ -103,12 +103,15 @@ def process_temperature_series_task(task_data: Dict[str, Any]) -> List[Dict[str,
             phases = task_data['phases']
             has_skin = task_data['has_skin']
             
-            current_guess = None
+            task_initial_guess = task_data.get('initial_guess')
+            current_guess = task_initial_guess
+            is_first_step = True
             
             for T in temperatures:
                 try:
                     # Full search only on the first step or if we lost the trail
-                    needs_exhaustive = (current_guess is None)
+                    needs_exhaustive = (current_guess is None) or (is_first_step and task_initial_guess is None)
+                    is_first_step = False
                     
                     res: OptimizationResult3Phase = optimizer.find_minimum_energy(
                         T=T,
@@ -219,12 +222,13 @@ class BNPSeriesProcessor:
                 geo = row["Geometry"]
                 pa = str(row["PhaseAlpha"]).split("(")[0]
                 pb = str(row["PhaseBeta"]).split("(")[0]
-                return f"{geo}_{pa}_{pb}"
+                skin = "_Skin" if row["HasSkin"] else "_NoSkin"
+                return f"{geo}_{pa}_{pb}{skin}"
                 
             df_min["comparison_label"] = df_min.apply(make_comparison_label, axis=1)
-            
-            # Pivot all columns needed for comparison and for reconstructing the config
-            pivot_cols = ["comparison_label", "xB_alpha", "xB_beta", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin"]
+            df_min["phase_fraction"] = df_min["n_alpha"] / df_min["n_total"]
+            # Pivot all columns needed for comparison, configs, and initial guesses
+            pivot_cols = ["comparison_label", "xB_alpha", "xB_beta", "phase_fraction", "Geometry", "PhaseAlpha", "PhaseBeta", "HasSkin", "A_ratio_alpha", "B_ratio_alpha", "xB_skin", "G_min"]
             grids = {}
             for col in pivot_cols:
                 try:
@@ -235,10 +239,15 @@ class BNPSeriesProcessor:
             grid_label = grids["comparison_label"].values
             grid_xba = grids["xB_alpha"].values
             grid_xbb = grids["xB_beta"].values
+            grid_frac = grids["phase_fraction"].values
             grid_geo = grids["Geometry"].values
             grid_pa = grids["PhaseAlpha"].values
             grid_pb = grids["PhaseBeta"].values
             grid_hs = grids["HasSkin"].values
+            grid_ara = grids["A_ratio_alpha"].values
+            grid_bra = grids["B_ratio_alpha"].values
+            grid_xbs_val = grids["xB_skin"].values
+            grid_gmin = grids["G_min"].values
             
             rows, cols = grid_label.shape
             T_vals = grids["comparison_label"].index.values
@@ -253,10 +262,11 @@ class BNPSeriesProcessor:
                     neighbor_comparison_vals = []
                     matching_neighbor_xba = []
                     matching_neighbor_xbb = []
-                    
+                    matching_neighbor_frac = []
+
                     val_xba = grid_xba[r, c]
                     val_xbb = grid_xbb[r, c]
-                    
+                    val_frac = grid_frac[r, c]
                     for dr in [-1, 0, 1]:
                         for dc in [-1, 0, 1]:
                             if dr == 0 and dc == 0: continue
@@ -272,7 +282,11 @@ class BNPSeriesProcessor:
                                         n_val_xbb = grid_xbb[nr, nc]
                                         if pd.notna(n_val_xbb):
                                             matching_neighbor_xbb.append(n_val_xbb)
-                                        
+                                        n_val_frac = grid_frac[nr, nc]
+                                        if pd.notna(n_val_frac):
+                                            matching_neighbor_frac.append(n_val_frac)
+
+
                     if not neighbor_comparison_vals: continue
                         
                     valid_neighbors = len(neighbor_comparison_vals)
@@ -286,7 +300,7 @@ class BNPSeriesProcessor:
                         if valid_neighbors > 0 and neighbors_matching_self <= int(0.4 * valid_neighbors):
                             is_suspect = True
                     else:
-                        if neighbors_matching_self <= 2:
+                        if neighbors_matching_self <= 4:
                             is_suspect = True
                     
                     # Condition 2: Label matches, but the phase composition jumped
@@ -300,7 +314,13 @@ class BNPSeriesProcessor:
                                 if pd.notna(val_xbb) and abs(val_xbb - n_xbb) > 0.2:
                                     is_suspect = True
                                     break
-                            
+                    
+                    if not is_suspect:
+                            for n_frac in matching_neighbor_frac:
+                                if pd.notna(val_frac) and abs(val_frac - n_frac) > 0.15:
+                                    is_suspect = True
+                                    break
+                                
                     if is_suspect:
                         # Get current config
                         current_config = {
@@ -314,24 +334,43 @@ class BNPSeriesProcessor:
                         counts = Counter(neighbor_comparison_vals)
                         most_common_comparison_label, _ = counts.most_common(1)[0]
                         
-                        majority_config = None
+                        best_majority_neighbor_g = float('inf')
+                        best_majority_neighbor_coords = None
+                        
+                        # Find the best instance (lowest G) of the majority neighbor
                         for dr_find in [-1, 0, 1]:
                             for dc_find in [-1, 0, 1]:
                                 if dr_find == 0 and dc_find == 0: continue
                                 nr_find, nc_find = r + dr_find, c + dc_find
                                 if 0 <= nr_find < rows and 0 <= nc_find < cols:
                                     if grids["comparison_label"].values[nr_find, nc_find] == most_common_comparison_label:
-                                        majority_config = {
-                                            'geometry': grid_geo[nr_find, nc_find],
-                                            'phases': (grid_pa[nr_find, nc_find], grid_pb[nr_find, nc_find]),
-                                            'has_skin': bool(grid_hs[nr_find, nc_find])
-                                        }
-                                        break
-                            if majority_config: break
-                        
-                        if majority_config and current_config != majority_config:
+                                        neighbor_g = grid_gmin[nr_find, nc_find]
+                                        if pd.notna(neighbor_g) and neighbor_g < best_majority_neighbor_g:
+                                            best_majority_neighbor_g = neighbor_g
+                                            best_majority_neighbor_coords = (nr_find, nc_find)
+
+                        if best_majority_neighbor_coords:
+                            nr_best, nc_best = best_majority_neighbor_coords
+
+                            majority_config = {
+                                'geometry': grid_geo[nr_best, nc_best],
+                                'phases': (grid_pa[nr_best, nc_best], grid_pb[nr_best, nc_best]),
+                                'has_skin': bool(grid_hs[nr_best, nc_best])
+                            }
+
+                            majority_guess = [
+                                grid_ara[nr_best, nc_best],
+                                grid_bra[nr_best, nc_best]
+                            ]
+                            
+                            if majority_config['has_skin']:
+                                xbs_val = grid_xbs_val[nr_best, nc_best]
+                                if pd.notna(xbs_val):
+                                    majority_guess.append(xbs_val)
+                                
                             suspects.append({'T': T_vals[r], 'xB_total': xB_vals[c],
-                                             'current_config': current_config, 'majority_config': majority_config})
+                                             'current_config': current_config, 'majority_config': majority_config,
+                                             'majority_guess': majority_guess})
                         
             return suspects
         except Exception as e:
@@ -403,7 +442,7 @@ class BNPSeriesProcessor:
         tasks = []
         seen_tasks = set()
 
-        def create_task(T, xB, config_dict):
+        def create_task(T, xB, config_dict, initial_guess=None):
             geo = config_dict['geometry']
             phases = config_dict['phases']
             has_skin = config_dict['has_skin']
@@ -420,6 +459,8 @@ class BNPSeriesProcessor:
                     'n_total': n_total, 'config': self.config, 'geometry': geo,
                     'phases': phases, 'has_skin': has_skin
                 }
+                if initial_guess is not None:
+                    task['initial_guess'] = initial_guess
                 task_id = ('MultiPhase', T, xB, n_total, geo, phases[0], phases[1], has_skin)
             
             return task, task_id
@@ -427,18 +468,20 @@ class BNPSeriesProcessor:
         for suspect in suspect_details:
             T = suspect['T']
             xB = suspect['xB_total']
+            maj_guess = suspect.get('majority_guess')
 
             # Task 1: Recalculate the current (suspect) configuration
-            task1, id1 = create_task(T, xB, suspect['current_config'])
+            task1, id1 = create_task(T, xB, suspect['current_config'], maj_guess)
             if id1 not in seen_tasks:
                 tasks.append(task1)
                 seen_tasks.add(id1)
 
             # Task 2: Recalculate the majority neighbor's configuration
-            task2, id2 = create_task(T, xB, suspect['majority_config'])
-            if id2 not in seen_tasks:
-                tasks.append(task2)
-                seen_tasks.add(id2)
+            if suspect['majority_config'] != suspect['current_config']:
+                task2, id2 = create_task(T, xB, suspect['majority_config'], maj_guess)
+                if id2 not in seen_tasks:
+                    tasks.append(task2)
+                    seen_tasks.add(id2)
         
         return tasks
 
@@ -544,34 +587,51 @@ class BNPSeriesProcessor:
             print(f"Error: File not found at {filepath}")
             return
 
-        try:
-            df_original = pd.read_csv(filepath)
-        except Exception as e:
-            print(f"Error reading CSV file: {e}")
-            return
+        max_passes = 10
+        previous_suspect_coords = set()
 
-        # Infer n_total from the file
-        n_total_values = df_original['n_total'].unique()
-        if len(n_total_values) == 0:
-            print("Error: No 'n_total' values found in the file.")
-            return
-        if len(n_total_values) > 1:
-            print(f"Warning: Multiple n_total values found: {n_total_values}. Using the first one: {n_total_values[0]}")
-        n_total = n_total_values[0]
-        print(f"Inferred n_total = {n_total} from file.")
+        for pass_num in range(1, max_passes + 1):
+            try:
+                df_original = pd.read_csv(filepath)
+            except Exception as e:
+                print(f"Error reading CSV file: {e}")
+                return
 
-        # Automatically find suspect points
-        suspect_details = self.get_suspect_points(df_original)
-        if not suspect_details:
-            print("Inspector found no suspect points to fix. Exiting.")
-            return
-        
-        print(f"Inspector found {len(suspect_details)} suspect points. Queueing targeted deep search...")
-        # Run a targeted search on only the suspect and majority-neighbor configs
-        patch_tasks = self.generate_autofix_tasks(n_total, suspect_details)
+            # Infer n_total from the file
+            n_total_values = df_original['n_total'].unique()
+            if len(n_total_values) == 0:
+                print("Error: No 'n_total' values found in the file.")
+                return
+            if len(n_total_values) > 1:
+                print(f"Warning: Multiple n_total values found: {n_total_values}. Using the first one: {n_total_values[0]}")
+            n_total = n_total_values[0]
+            
+            if pass_num == 1:
+                print(f"Inferred n_total = {n_total} from file.")
 
-        # Call the shared execution logic
-        self._execute_patch_and_update_file(df_original, patch_tasks, filepath, n_jobs)
+            print(f"\n--- Autofix Pass {pass_num}/{max_passes} ---")
+
+            # Automatically find suspect points
+            suspect_details = self.get_suspect_points(df_original)
+            if not suspect_details:
+                print("Inspector found no suspect points to fix. Exiting loop.")
+                break
+            
+            current_suspect_coords = set((s['T'], s['xB_total']) for s in suspect_details)
+            if pass_num > 1 and current_suspect_coords == previous_suspect_coords:
+                print("Remaining suspect points could not be improved further. Exiting loop.")
+                break
+            previous_suspect_coords = current_suspect_coords
+
+            print(f"Inspector found {len(suspect_details)} suspect points. Queueing targeted deep search...")
+            # Run a targeted search on only the suspect and majority-neighbor configs
+            patch_tasks = self.generate_autofix_tasks(n_total, suspect_details)
+
+            # Call the shared execution logic
+            self._execute_patch_and_update_file(df_original, patch_tasks, filepath, n_jobs)
+            
+        else:
+            print(f"\nReached maximum number of autofix passes ({max_passes}).")
 
     def _execute_patch_and_update_file(self,
                                      df_original: pd.DataFrame,
@@ -812,7 +872,7 @@ class BNPSeriesProcessor:
         print("Generating and displaying phase diagrams...")
         try:
             from plotting_3_phase import PhaseDiagramPlotting3Phase
-            PhaseDiagramPlotting3Phase(master_filepath, save_dir=output_dir, timestamp=timestamp, auto_show=auto_show)
+            PhaseDiagramPlotting3Phase(master_filepath, save_dir=output_dir, timestamp=timestamp, auto_show=auto_show, apply_moving_average=False)
         except Exception as e:
             print(f"Warning: Could not open plots. Error: {e}")
         
@@ -820,7 +880,7 @@ if __name__ == "__main__":
     # --- USER-DEFINED SECTION ---
     
     # Select the run mode: "FULL_SIM", "PATCH", or "AUTOFIX"
-    RUN_MODE = "AUTOFIX"
+    RUN_MODE = "PATCH"
 
     # --- FULL SIMULATION CONFIGURATION ---
     # Used if RUN_MODE is "FULL_SIM".
@@ -832,34 +892,43 @@ if __name__ == "__main__":
     
     # 1. Specify the file to patch.
     # Example: FILE_TO_PATCH = "Results/3Phase_LowRes_20231027_103000.csv"
-    FILE_TO_MODIFY = "C:\\Users\\megu\\Documents\\VSCode 3 Phase 3D BNP\\Results worth saving\\n5e-17.csv" # <-- CHANGE THIS
+    FILE_TO_MODIFY = "C:\\Users\\megu\\Documents\\VSCode 3 Phase 3D BNP\\Results worth saving\\n5e-17\\n5e-17.csv" # <-- CHANGE THIS
 
     # --- PATCHING-SPECIFIC CONFIGURATION ---
     # Used only if RUN_MODE is "PATCH".
     AREAS_TO_PATCH = [
+        # {
+        #     # In this area, only calculate Core-Shell, Liquid-Liquid, with no skin.
+        #     'T_range': (750.0, 850.0),
+        #     'xB_range': (0.25, 0.35),
+        #     'filters': {
+        #         'geometries': ['Core Shell'],
+        #         'phase_pairs': [('Liquid', 'Liquid')],
+        #         'skin_options': [False]
+        #     }
+        # },
+        # {
+        #     # In this area, only calculate Single Phase Liquid.
+        #     'T_range': (1200.0, 1400.0),
+        #     'xB_range': (0.0, 1.0),
+        #     'filters': {
+        #         'geometries': ['SinglePhase'],
+        #         'single_phases': ['Liquid']
+        #     }
+        # },
+        # {   # This area will run a full exhaustive search because no 'filters' key is provided.
+        #     'T_range': (900.0, 1000.0),
+        #     'xB_range': (0.70, 0.80)
+        # }
         {
-            # In this area, only calculate Core-Shell, Liquid-Liquid, with no skin.
-            'T_range': (750.0, 850.0),
-            'xB_range': (0.25, 0.35),
+            'T_range': (500.0, 1150.0),
+            'xB_range': (0.0, 0.75),
             'filters': {
                 'geometries': ['Core Shell'],
-                'phase_pairs': [('Liquid', 'Liquid')],
+                'phase_pairs': [('FCC', 'FCC')],
                 'skin_options': [False]
             }
         },
-        {
-            # In this area, only calculate Single Phase Liquid.
-            'T_range': (1200.0, 1400.0),
-            'xB_range': (0.0, 1.0),
-            'filters': {
-                'geometries': ['SinglePhase'],
-                'single_phases': ['Liquid']
-            }
-        },
-        {   # This area will run a full exhaustive search because no 'filters' key is provided.
-            'T_range': (900.0, 1000.0),
-            'xB_range': (0.70, 0.80)
-        }
     ]
 
     # --- EXECUTION ---
