@@ -4,7 +4,6 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 from collections import Counter
-from sklearn.linear_model import LinearRegression
 
 # --- USER SETTINGS ---
 PHASE_THRESHOLD = 0.005 # Phases making up less than 0.5% of the total are removed
@@ -126,7 +125,6 @@ def identify_and_fix_suspect_points(df_in, max_iterations=10):
                         if len(tied_candidates) == 1:
                             best_cand = tied_candidates[0]
                         else:
-                            # TIE-BREAKER: Lowest average G_min
                             avg_gmin = {
                                 cand: np.mean([n[2] for n in neighbor_list if n[0] == cand])
                                 for cand in tied_candidates
@@ -155,57 +153,74 @@ def identify_and_fix_suspect_points(df_in, max_iterations=10):
             for target_idx, info in changes_to_apply.items():
                 df.loc[target_idx, cat_cols] = df.loc[info['cat'], cat_cols]
                 
-                # Only average columns that actually exist in the dataframe to avoid errors
                 valid_num_cols = [c for c in num_cols if c in df.columns]
                 df.loc[target_idx, valid_num_cols] = df.loc[info['nums'], valid_num_cols].mean()
                 df.loc[target_idx, 'Is_Suspect'] = True
 
     return df
 
-def get_r2(x, y):
-    """Calculates the R^2 value for a set of points to measure linearity."""
-    if len(x) < 2: 
-        return 1.0
-    x = np.array(x).reshape(-1, 1)
-    y = np.array(y)
-    
-    # Handle perfectly flat regions without raising errors
-    if np.all(y == y[0]):
-        return 1.0
-        
-    try:
-        model = LinearRegression().fit(x, y)
-        return model.score(x, y)
-    except:
-        return 1.0
+# --- NEW 15% AVERAGE LOGIC ---
 
-def is_r2_anomaly(vals):
+def is_spike_anomaly(vals, mode):
     """
-    Checks if the center point (index 2) significantly degrades the R^2 
-    of the 5-point set compared to the line formed by its neighbors.
+    Calculates the average of the neighbors (ignoring the target point).
+    If the target point deviates by more than 15% of that average, flags it as a spike.
     """
-    if any(pd.isna(v) for v in vals): 
-        return False
+    if any(pd.isna(v) for v in vals): return False
     
-    # R2 of the 4 neighbors only (excluding the target center point)
-    x_neighbors = np.array([0, 1, 3, 4])
-    y_neighbors = np.array([vals[0], vals[1], vals[3], vals[4]])
-    r2_neighbors = get_r2(x_neighbors, y_neighbors)
+    if mode == 'sym':
+        # Neighbors: [0, 1, 3, 4], Target: [2]
+        navg = (vals[0] + vals[1] + vals[3] + vals[4]) / 4.0
+        target = vals[2]
+    elif mode == 'edge_0':
+        # Neighbors: [1, 2, 3], Target: [0]
+        navg = (vals[1] + vals[2] + vals[3]) / 3.0
+        target = vals[0]
+    elif mode == 'edge_3':
+        # Neighbors: [0, 1, 2], Target: [3]
+        navg = (vals[0] + vals[1] + vals[2]) / 3.0
+        target = vals[3]
+        
+    # Margin is 15% of the local average (with a 0.01 absolute floor for zero-noise)
+    margin = max(0.15 * abs(navg), 0.01)
     
-    # R2 of all 5 points (including the target center point)
-    x_full = np.array([0, 1, 2, 3, 4])
-    y_full = np.array(vals)
-    r2_full = get_r2(x_full, y_full)
-    
-    # TRIGGER: If neighbors are highly linear (>0.9) but the center point 
-    # causes the R2 to drop by more than 10% (0.1), it is a suspect spike.
-    if r2_neighbors > 0.9 and (r2_neighbors - r2_full) > 0.1:
+    if abs(target - navg) > margin:
+        return True
+    return False
+
+def check_pts_for_anomaly(pts, mode):
+    """Helper to sweep all numerical attributes for a 15% spike anomaly."""
+    for attr_idx in [2, 3, 4, 5, 6]:
+        vals = [p[attr_idx] for p in pts]
+        if is_spike_anomaly(vals, mode): 
+            return True
+    return False
+
+def is_valid_window(pts):
+    """Helper to ensure all points in a window exist and share the same phase typing."""
+    if any(p is None for p in pts): return False
+    return len(set(p[0] for p in pts)) == 1
+
+def is_applicable_border(window_pts, outside_pt):
+    """
+    Checks if a boundary involves a SinglePhase region OR any Liquid phase.
+    Allows the edge case where the boundary is the physical edge of the grid.
+    """
+    win_str = window_pts[0][0]
+    if "SinglePhase" in win_str or "Liquid" in win_str:
+        return True
+        
+    if outside_pt is None:
+        return True 
+        
+    out_str = outside_pt[0]
+    if "SinglePhase" in out_str or "Liquid" in out_str:
         return True
         
     return False
 
-def smooth_slope_anomalies(df_in, max_iterations=10):
-    """Detects and fixes numerical noise within continuous phase regions using R^2 analysis."""
+def smooth_numerical_anomalies(df_in, max_iterations=10):
+    """Detects and fixes numerical spikes using the 15% neighbor average rule."""
     df = df_in.copy()
     
     for n in df["n_total"].unique():
@@ -235,11 +250,8 @@ def smooth_slope_anomalies(df_in, max_iterations=10):
                 c = xB_to_idx[subset.loc[idx, 'xB_rounded']]
                 comp_str = f"{row['Geometry']}_{row['PhaseAlpha']}_{row['PhaseBeta']}_{row['HasSkin']}"
                 
-                # Provide fractional values for R2 analysis
                 f_alpha = row['n_alpha'] / n if pd.notna(row['n_alpha']) else np.nan
                 f_beta = row['n_beta'] / n if pd.notna(row['n_beta']) else np.nan
-                
-                # Use .get() to safely handle cases where phase compositions might be missing
                 xb_a = row.get('xB_alpha', np.nan)
                 xb_b = row.get('xB_beta', np.nan)
                 xb_s = row.get('xB_skin', np.nan)
@@ -251,66 +263,77 @@ def smooth_slope_anomalies(df_in, max_iterations=10):
 
             # 1. Horizontal sweep
             for r in range(rows):
-                for c in range(2, cols - 2):
-                    pts = [grid[r, c+i] for i in range(-2, 3)]
-                    if None in pts: continue
+                for c in range(cols):
+                    if grid[r, c] is None: continue
+                    target_idx = grid[r, c][1]
+                    if target_idx in changes_to_apply: continue
+
+                    sym_pts = [grid[r, c+i] if 0 <= c+i < cols else None for i in range(-2, 3)]
                     
-                    if len(set(p[0] for p in pts)) != 1: continue 
-                    
-                    f_alphas = [p[2] for p in pts]
-                    f_betas = [p[3] for p in pts]
-                    xb_alphas = [p[4] for p in pts]
-                    xb_betas = [p[5] for p in pts]
-                    xb_skins = [p[6] for p in pts]
-                    
-                    target_idx = pts[2][1]
-                    neighbor_indices = [pts[i][1] for i in [0, 1, 3, 4]]
-                    
-                    if (is_r2_anomaly(f_alphas) or is_r2_anomaly(f_betas) or 
-                        is_r2_anomaly(xb_alphas) or is_r2_anomaly(xb_betas) or 
-                        is_r2_anomaly(xb_skins)):
-                        changes_to_apply[target_idx] = neighbor_indices
+                    if is_valid_window(sym_pts):
+                        if check_pts_for_anomaly(sym_pts, 'sym'):
+                            # Overwrite with the 4 neighbors
+                            changes_to_apply[target_idx] = [sym_pts[i][1] for i in [0, 1, 3, 4]]
+                    else:
+                        right_pts = [grid[r, c+i] if 0 <= c+i < cols else None for i in range(4)]
+                        left_pts = [grid[r, c+i] if 0 <= c+i < cols else None for i in range(-3, 1)]
+                        
+                        outside_left = grid[r, c-1] if 0 <= c-1 < cols else None
+                        outside_right = grid[r, c+1] if 0 <= c+1 < cols else None
+                        
+                        if is_valid_window(right_pts) and is_applicable_border(right_pts, outside_left):
+                            if check_pts_for_anomaly(right_pts, 'edge_0'):
+                                changes_to_apply[target_idx] = [right_pts[i][1] for i in [1, 2, 3]]
+                        elif is_valid_window(left_pts) and is_applicable_border(left_pts, outside_right):
+                            if check_pts_for_anomaly(left_pts, 'edge_3'):
+                                changes_to_apply[target_idx] = [left_pts[i][1] for i in [0, 1, 2]]
 
             # 2. Vertical sweep
             for c in range(cols):
-                for r in range(2, rows - 2):
-                    pts = [grid[r+i, c] for i in range(-2, 3)]
-                    if None in pts: continue
+                for r in range(rows):
+                    if grid[r, c] is None: continue
+                    target_idx = grid[r, c][1]
+                    if target_idx in changes_to_apply: continue
+
+                    sym_pts = [grid[r+i, c] if 0 <= r+i < rows else None for i in range(-2, 3)]
                     
-                    if len(set(p[0] for p in pts)) != 1: continue
-                    
-                    f_alphas = [p[2] for p in pts]
-                    f_betas = [p[3] for p in pts]
-                    xb_alphas = [p[4] for p in pts]
-                    xb_betas = [p[5] for p in pts]
-                    xb_skins = [p[6] for p in pts]
-                    
-                    target_idx = pts[2][1]
-                    neighbor_indices = [pts[i][1] for i in [0, 1, 3, 4]]
-                    
-                    if target_idx not in changes_to_apply:
-                        if (is_r2_anomaly(f_alphas) or is_r2_anomaly(f_betas) or 
-                            is_r2_anomaly(xb_alphas) or is_r2_anomaly(xb_betas) or 
-                            is_r2_anomaly(xb_skins)):
-                            changes_to_apply[target_idx] = neighbor_indices
+                    if is_valid_window(sym_pts):
+                        if check_pts_for_anomaly(sym_pts, 'sym'):
+                            changes_to_apply[target_idx] = [sym_pts[i][1] for i in [0, 1, 3, 4]]
+                    else:
+                        down_pts = [grid[r+i, c] if 0 <= r+i < rows else None for i in range(4)]
+                        up_pts = [grid[r+i, c] if 0 <= r+i < rows else None for i in range(-3, 1)]
+                        
+                        outside_up = grid[r-1, c] if 0 <= r-1 < rows else None
+                        outside_down = grid[r+1, c] if 0 <= r+1 < rows else None
+                        
+                        if is_valid_window(down_pts) and is_applicable_border(down_pts, outside_up):
+                            if check_pts_for_anomaly(down_pts, 'edge_0'):
+                                changes_to_apply[target_idx] = [down_pts[i][1] for i in [1, 2, 3]]
+                        elif is_valid_window(up_pts) and is_applicable_border(up_pts, outside_down):
+                            if check_pts_for_anomaly(up_pts, 'edge_3'):
+                                changes_to_apply[target_idx] = [up_pts[i][1] for i in [0, 1, 2]]
 
             if not changes_to_apply:
                 if pass_num > 1:
-                    print(f"  n={n:.1e} (R2-Slope): Reached steady state after {pass_num - 1} passes.")
+                    print(f"  n={n:.1e} (Avg-Slope): Reached steady state after {pass_num - 1} passes.")
                 else:
-                    print(f"  n={n:.1e} (R2-Slope): No numerical anomalies found on first pass.")
+                    print(f"  n={n:.1e} (Avg-Slope): No numerical anomalies found on first pass.")
                 break
 
-            print(f"  n={n:.1e} (R2-Slope): Pass {pass_num} smoothing {len(changes_to_apply)} points...")
+            print(f"  n={n:.1e} (Avg-Slope): Pass {pass_num} smoothing {len(changes_to_apply)} points...")
 
             num_cols = ['xB_skin', 'n_alpha', 'n_beta', 'xB_alpha', 'xB_beta']
             
             for target_idx, neighbor_indices in changes_to_apply.items():
                 valid_num_cols = [c for c in num_cols if c in df.columns]
+                # Because we pass the neighbor indices to pandas, it natively calculates the 
+                # physical average of the raw moles/compositions without scaling issues!
                 df.loc[target_idx, valid_num_cols] = df.loc[neighbor_indices, valid_num_cols].mean()
                 df.loc[target_idx, 'Is_Suspect'] = True
 
     return df
+
 
 def main():
     root = tk.Tk()
@@ -350,8 +373,8 @@ def main():
     print("\n--- Running Categorical Speckle Remover ---")
     df_cat_fixed = identify_and_fix_suspect_points(df_cleaned, max_iterations=10)
     
-    print("\n--- Running Numerical Slope Smoother ---")
-    df_fully_fixed = smooth_slope_anomalies(df_cat_fixed, max_iterations=10)
+    print("\n--- Running Numerical Spike Smoother ---")
+    df_fully_fixed = smooth_numerical_anomalies(df_cat_fixed, max_iterations=10)
     
     num_suspects = df_fully_fixed["Is_Suspect"].sum() if "Is_Suspect" in df_fully_fixed else 0
     print(f"\nTotal points modified across all passes: {num_suspects}")
