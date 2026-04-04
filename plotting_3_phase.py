@@ -1,27 +1,20 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import matplotlib.colors as mcolors
-from matplotlib.path import Path
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import numpy as np
-import glob
 import os
 import datetime
 
 class PhaseDiagramPlotting3Phase:
-    def __init__(self, file_name, save_dir=None, timestamp=None, plot_title_suffix="", auto_show=True, apply_moving_average=True):
-        # save_dir: optional directory to save figures to. If None, figures are only displayed.
-        # timestamp: optional timestamp string to include in saved filenames
-        
+    def __init__(self, file_name, save_dir=None, timestamp=None, plot_title_suffix="", auto_show=True):
         self.auto_show = auto_show
         self.plot_title_suffix = plot_title_suffix
         self.file_name = file_name
-        self.apply_moving_average = apply_moving_average
+        
         if save_dir is None:
             self.save_dir = "Results"
-        
         else:
             self.save_dir = save_dir
 
@@ -30,19 +23,14 @@ class PhaseDiagramPlotting3Phase:
         else:
             self.timestamp = timestamp
         
-        # 1. Define Colors per User Request
+        # 1. Define Colors
         self.COLORS = {
-            # Single Phase
             "Single_Liquid": "lightblue",
-            "Single_FCC": "#FFDB58", # Mustard
-
-            # Two Phase (Alpha/Beta)
+            "Single_FCC": "#FFDB58", 
             "Alpha_FCC": "lightgreen",
             "Beta_FCC": "darkgreen",
-            "Alpha_Liquid": "#B57EDC", # Lavender (darkened slightly for visibility)
+            "Alpha_Liquid": "#B57EDC", 
             "Beta_Liquid": "darkviolet",
-
-            # Skin Outlines
             "Skin_A": "red",
             "Skin_B": "blue"
         }
@@ -53,7 +41,6 @@ class PhaseDiagramPlotting3Phase:
         self.preprocess_data()
 
         # 3. Filter Valid Results
-        # Remove failed calculations (G_min = 1.0 or infinity are error flags)
         self.df = self.df[(self.df["G_min"] != 1.0) & (~np.isinf(self.df["G_min"]))].copy()
         
         if self.df.empty:
@@ -61,290 +48,29 @@ class PhaseDiagramPlotting3Phase:
             return
 
         # 4. Find Minimum Energy Configuration per Point
-        # Group by n_total, xB_total, T and find the row with the absolute minimum G_min
         idx = self.df.groupby(["n_total", "xB_total", "T"])["G_min"].idxmin()
         self.df_min = self.df.loc[idx].copy()
 
-        # 5. Clean Dust / Enforce Thresholds
-        # Converts Core-Shell with tiny cores/shells into SinglePhase for cleaner plotting
-        self.df_min = self.df_min.apply(self.enforce_phase_threshold, axis=1)
-
-        # 6. Generate Labels
-        self.df_min["phase_label"] = self.df_min.apply(self.make_label, axis=1)
-
-        # 7. Remove Speckles (Isolated single-phase points)
-        cleaned_dfs = []
-        for n in self.df_min["n_total"].unique():
-            subset = self.df_min[self.df_min["n_total"] == n].copy()
-            cleaned_subset = self.remove_speckles_from_slice(subset, passes=5)
-            cleaned_dfs.append(cleaned_subset)
-        self.df_min = pd.concat(cleaned_dfs, ignore_index=True)
-
-        # 8. Plot
+        # 5. Plot
         self.plot_all_phase_diagrams_per_n_total()
 
     def preprocess_data(self):
-        # Ensure string columns are stripped of whitespace
         for col in ["Geometry", "PhaseAlpha", "PhaseBeta"]:
             if col in self.df.columns:
                 self.df[col] = self.df[col].astype(str).str.strip()
                 
         if "HasSkin" in self.df.columns:
-            # Handle potential string conversions of bools from the CSV
             self.df["HasSkin"] = self.df["HasSkin"].replace({'True': True, 'False': False, '1': True, '0': False})
             self.df["HasSkin"] = self.df["HasSkin"].fillna(False).astype(bool)
+            
+        if "Is_Suspect" in self.df.columns:
+            self.df["Is_Suspect"] = self.df["Is_Suspect"].replace({'True': True, 'False': False, '1': True, '0': False})
+            self.df["Is_Suspect"] = self.df["Is_Suspect"].fillna(False).astype(bool)
         
-        # Ensure numeric columns
         cols = ["xB_total", "T", "G_min", "n_total", "n_alpha", "n_beta", "xB_skin"]
         for c in cols:
             if c in self.df.columns:
                 self.df[c] = pd.to_numeric(self.df[c], errors='coerce')
-
-    def make_label(self, row):
-        geo = row["Geometry"]
-        a = row["PhaseAlpha"]
-        b = row["PhaseBeta"]
-        has_skin = row["HasSkin"]
-        xb_skin = row["xB_skin"]
-
-        suffix = ""
-        if has_skin and not pd.isna(xb_skin):
-            if xb_skin < 0.5:
-                suffix = "+SkinA"
-            else:
-                suffix = "+SkinB"
-        
-        # Append dominant material to distinguish inversions (e.g. Cu-core vs Ag-core)
-        xb_a = row.get("xB_alpha", np.nan)
-        xb_b = row.get("xB_beta", np.nan)
-        if not pd.isna(xb_a):
-            a = f"{a}(Cu)" if xb_a > 0.5 else f"{a}(Ag)"
-        if not pd.isna(xb_b):
-            b = f"{b}(Cu)" if xb_b > 0.5 else f"{b}(Ag)"
-
-        if geo == "SinglePhase":
-            return f"{geo}{suffix}__{a}"
-        
-        return f"{geo}{suffix}__{a}+{b}"
-
-    def remove_speckles_from_slice(self, df_slice, passes=5):
-        """
-        Removes isolated speckles using a grid-based cellular automaton approach.
-        Updates Geometry, PhaseAlpha, PhaseBeta, HasSkin based on the smoothed label.
-        """
-        try:
-            # 1. Create a simplified label for comparison, based only on Geometry and Phases.
-            # This is what "Difference are either - phases, geometry" means.
-            def make_comparison_label(row):
-                geo = row["Geometry"]
-                # Strip composition tags like (Ag) from phases for comparison
-                pa = str(row["PhaseAlpha"]).split("(")[0]
-                pb = str(row["PhaseBeta"]).split("(")[0]
-                skin = "_Skin" if row["HasSkin"] else "_NoSkin"
-                return f"{geo}_{pa}_{pb}{skin}"
-            
-            df_slice['comparison_label'] = df_slice.apply(make_comparison_label, axis=1)
-
-            # 2. Create two grids: one with the full, detailed label for updating,
-            #    and one with the simplified label for comparison.
-            try:
-                grid_df_full = df_slice.pivot(index="T", columns="xB_total", values="phase_label")
-                grid_df_comparison = df_slice.pivot(index="T", columns="xB_total", values="comparison_label")
-            except ValueError: # Handle potential duplicates if any slip through
-                grid_df_full = df_slice.pivot_table(index="T", columns="xB_total", values="phase_label", aggfunc='first')
-                grid_df_comparison = df_slice.pivot_table(index="T", columns="xB_total", values="comparison_label", aggfunc='first')
-
-            full_label_grid = grid_df_full.values
-            comparison_grid = grid_df_comparison.values
-            rows, cols = comparison_grid.shape
-
-            # 3. Cellular Automaton Smoothing
-            for i in range(passes):
-                new_full_label_grid = full_label_grid.copy()
-                new_comparison_grid = comparison_grid.copy()
-                changes_made = 0
-
-                for r in range(rows):
-                    for c in range(cols):
-                        current_comparison_val = comparison_grid[r, c]
-                        if pd.isna(current_comparison_val): continue
-                        
-                        neighbor_comparison_vals = []
-                        neighbor_full_labels = {} # Map comparison label to a representative full label
-                        
-                        # Check 8 neighbors
-                        for dr in [-1, 0, 1]:
-                            for dc in [-1, 0, 1]:
-                                if dr == 0 and dc == 0: continue
-                                nr, nc = r + dr, c + dc
-                                 
-                                if 0 <= nr < rows and 0 <= nc < cols:
-                                    comp_val = comparison_grid[nr, nc]
-                                    if pd.notna(comp_val):
-                                        neighbor_comparison_vals.append(comp_val)
-                                        if comp_val not in neighbor_full_labels:
-                                            neighbor_full_labels[comp_val] = full_label_grid[nr, nc]
-                        
-                        if not neighbor_comparison_vals: continue
-                        
-                        neighbors_matching_self = neighbor_comparison_vals.count(current_comparison_val)
-                        valid_neighbors = len(neighbor_comparison_vals)
-                        
-                        # 4. Morphological Filter & Speckle Removal
-                        from collections import Counter
-                        counts = Counter(neighbor_comparison_vals)
-                        most_common_comparison_label, max_count = counts.most_common(1)[0]
-                        
-                        is_speckle = False
-                        is_edge = (r == 0) or (r == rows - 1) or (c == 0) or (c == cols - 1)
-
-                        if is_edge:
-                            if valid_neighbors > 0 and neighbors_matching_self <= int(0.4 * valid_neighbors):
-                                is_speckle = True
-                        else:
-                            # Rule 1: True Speckle (Isolated noise, 3 or fewer friends)
-                            if neighbors_matching_self <= 3:
-                                is_speckle = True
-                            
-                            # Rule 2: Morphological Boundary Smoothing ("The Ironing Rule")
-                            # If a point is on a jagged staircase boundary, and a single OTHER phase 
-                            # surrounds it on 5 or more sides, flip it to smooth the diagonal line.
-                            elif max_count >= 5 and most_common_comparison_label != current_comparison_val:
-                                is_speckle = True
-
-                            # Rule 3: Liquid Surface Segregation Bias (Tie-Breaker)
-                            # The energy difference between uniform liquid and a segregated liquid shell is microscopic.
-                            # Bias the voting to allow the physically segregated state to fill in the 50/50 noise.
-                            elif "SinglePhase_Liquid" in current_comparison_val and "Core_Shell_Liquid_Liquid" in most_common_comparison_label:
-                                if max_count >= 3: 
-                                    is_speckle = True
-
-                        if is_speckle:
-                            if most_common_comparison_label != current_comparison_val:
-                                # Find the corresponding full label from a neighbor
-                                new_full_label = neighbor_full_labels[most_common_comparison_label]
-                                
-                                new_full_label_grid[r, c] = new_full_label
-                                new_comparison_grid[r, c] = most_common_comparison_label
-                                changes_made += 1
-                
-                full_label_grid = new_full_label_grid
-                comparison_grid = new_comparison_grid
-                if changes_made == 0:
-                    break
-
-            # 5. Map the updated full labels back to the DataFrame
-            cleaned_flat = pd.DataFrame(full_label_grid, index=grid_df_full.index, columns=grid_df_full.columns).reset_index().melt(id_vars="T", value_name="new_phase_label")
-            df_merged = pd.merge(df_slice, cleaned_flat, on=["T", "xB_total"], how="left")
-            
-            mask_changed = df_merged["phase_label"] != df_merged["new_phase_label"]
-            
-            if mask_changed.sum() > 0:
-                df_merged.loc[mask_changed, "phase_label"] = df_merged.loc[mask_changed, "new_phase_label"]
-                
-                # Update dependent columns (Geometry, Phases, etc.) for the changed rows
-                for idx in df_merged[mask_changed].index:
-                    new_label = df_merged.loc[idx, "phase_label"]
-                    geo, pa, pb, skin, xb_s = self._parse_label_to_cols(new_label)
-                    
-                    df_merged.loc[idx, "Geometry"] = geo
-                    df_merged.loc[idx, "PhaseAlpha"] = pa
-                    df_merged.loc[idx, "PhaseBeta"] = pb
-                    df_merged.loc[idx, "HasSkin"] = skin
-                    if skin:
-                        df_merged.loc[idx, "xB_skin"] = xb_s
-            
-            # Clean up temporary columns
-            df_merged.drop(columns=["new_phase_label", "comparison_label"], inplace=True)
-            return df_merged
-            
-        except Exception as e:
-            print(f"  Error in neighbor-based speckle removal: {e}")
-            import traceback
-            traceback.print_exc()
-            return df_slice
-
-    def _parse_label_to_cols(self, label):
-        # Helper to reverse make_label
-        if pd.isna(label): return "SinglePhase", "Unknown", "None", False, np.nan
-        label = str(label)
-        
-        # Split Geometry+Skin and Phases
-        if "__" in label:
-            left, right = label.split("__", 1)
-        else:
-            left, right = label, ""
-            
-        # Parse Skin
-        has_skin = False
-        xb_skin = np.nan
-        
-        if "+SkinA" in left:
-            has_skin = True
-            xb_skin = 0.0
-            geo = left.replace("+SkinA", "")
-        elif "+SkinB" in left:
-            has_skin = True
-            xb_skin = 1.0
-            geo = left.replace("+SkinB", "")
-        elif "+Skin" in left:
-            has_skin = True
-            xb_skin = 0.5
-            geo = left.replace("+Skin", "")
-        else:
-            geo = left
-            
-        # Parse Phases
-        if "+" in right:
-            pa, pb = right.split("+", 1)
-        else:
-            pa = right
-            pb = "None"
-            
-        # Strip the compositional tags (e.g. "(Ag)") to restore base phase names
-        pa = pa.split("(")[0]
-        pb = pb.split("(")[0]
-
-        return geo, pa, pb, has_skin, xb_skin
-
-    def enforce_phase_threshold(self, row):
-        # 1. Define Threshold
-        THRESHOLD = 0.0001 
-        
-        if row["Geometry"] == "SinglePhase":
-            return row
-        
-        n_tot = row["n_total"]
-        na = row["n_alpha"]
-        nb = row["n_beta"]
-        
-        # If calculation failed (NaN) or data is missing
-        if pd.isna(na) or pd.isna(nb) or n_tot == 0:
-            original_beta_phase = row["PhaseBeta"]
-            row["Geometry"] = "SinglePhase"
-            row["PhaseBeta"] = "None" 
-            if row["xB_total"] > 0.5:
-                row["PhaseAlpha"] = original_beta_phase
-            return row
-
-        # If Core (Alpha) is tiny -> SinglePhase Beta
-        if (na / n_tot) < THRESHOLD:
-            original_beta_phase = row["PhaseBeta"]
-            row["Geometry"] = "SinglePhase"
-            row["PhaseAlpha"] = original_beta_phase
-            row["PhaseBeta"] = "None"
-            row["HasSkin"] = False   
-            row["xB_skin"] = np.nan
-            return row
-        
-        # If Shell (Beta) is tiny -> SinglePhase Alpha
-        if (nb / n_tot) < THRESHOLD and n_tot > 1.0-1e-6:
-            row["Geometry"] = "SinglePhase"
-            row["PhaseBeta"] = "None"
-            return row
-            
-        return row
-
 
     def plot_all_phase_diagrams_per_n_total(self):
         df_plot = self.df_min
@@ -354,7 +80,7 @@ class PhaseDiagramPlotting3Phase:
             if subset.empty: continue
             
             fig = plt.figure(figsize=(12, 8))
-            base_size = 60 # Standardize the base size
+            base_size = 30 
             MIN_VISIBLE_RATIO = 0.2 
 
             # 1. Single Phase
@@ -372,13 +98,6 @@ class PhaseDiagramPlotting3Phase:
                 df_cs["alpha_ratio"] = df_cs["n_alpha"] / df_cs["n_total"]
                 df_cs["alpha_ratio"] = df_cs["alpha_ratio"].fillna(0)
                 
-                if self.apply_moving_average:
-                    df_cs = df_cs.sort_values(by=["T", "xB_total"])
-                    df_cs["alpha_ratio"] = df_cs.groupby("T")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
-                    df_cs = df_cs.sort_values(by=["xB_total", "T"])
-                    df_cs["alpha_ratio"] = df_cs.groupby("xB_total")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
-                    df_cs = df_cs.sort_values(by=["T", "xB_total"])
-                
                 plot_alpha_ratio = df_cs["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 c_alpha = self._get_phase_colors(df_cs["PhaseAlpha"], "Alpha")
                 c_beta = self._get_phase_colors(df_cs["PhaseBeta"], "Beta")
@@ -393,13 +112,6 @@ class PhaseDiagramPlotting3Phase:
                 df_janus["alpha_ratio"] = df_janus["n_alpha"] / df_janus["n_total"]
                 df_janus["alpha_ratio"] = df_janus["alpha_ratio"].fillna(0)
                 
-                if self.apply_moving_average:
-                    df_janus = df_janus.sort_values(by=["T", "xB_total"])
-                    df_janus["alpha_ratio"] = df_janus.groupby("T")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
-                    df_janus = df_janus.sort_values(by=["xB_total", "T"])
-                    df_janus["alpha_ratio"] = df_janus.groupby("xB_total")["alpha_ratio"].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).mean())
-                    df_janus = df_janus.sort_values(by=["T", "xB_total"])
-
                 plot_alpha_ratio = df_janus["alpha_ratio"].clip(lower=MIN_VISIBLE_RATIO, upper=1.0 - MIN_VISIBLE_RATIO)
                 c_alpha = self._get_phase_colors(df_janus["PhaseAlpha"], "Alpha")
                 c_beta = self._get_phase_colors(df_janus["PhaseBeta"], "Beta")
@@ -414,12 +126,11 @@ class PhaseDiagramPlotting3Phase:
                         s=base_size, marker=verts, zorder=2
                     )
 
-            # --- THE NEW SKIN OVERLAY LAYER ---
+            # 4. Skin Overlay Layer
             df_skin = subset[subset["HasSkin"] == True].copy()
             if not df_skin.empty:
                 skin_colors = np.where(df_skin["xB_skin"] < 0.5, self.COLORS["Skin_A"], self.COLORS["Skin_B"])
-                # Note: facecolors='none' creates an empty ring, zorder=10 forces it to the top
-                plt.scatter(df_skin["xB_total"], df_skin["T"], facecolors='none', edgecolors=skin_colors, s=base_size, linewidths=1.5, zorder=10)
+                plt.scatter(df_skin["xB_total"], df_skin["T"], facecolors='none', edgecolors=skin_colors, s=base_size, linewidths=0.5, zorder=10)
                     
             title = f"Phase Diagram (n={n:.1e})"
             if self.plot_title_suffix:
@@ -436,9 +147,8 @@ class PhaseDiagramPlotting3Phase:
                 Patch(facecolor=self.COLORS['Beta_FCC'], label='Beta (Shell/Back): FCC'),
                 Patch(facecolor=self.COLORS['Alpha_Liquid'], label='Alpha (Core/Seg): Liquid'),
                 Patch(facecolor=self.COLORS['Beta_Liquid'], label='Beta (Shell/Back): Liquid'),
-                # Updated Legend for the ring style
-                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=2.0, markersize=10),
-                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=2.0, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=0.5, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=0.5, markersize=10),
                 Line2D([0], [0], marker=self._create_segment_marker(0.3), color='w', label='Janus: Alpha (Segment) / Beta (Back)', markerfacecolor='gray', markeredgecolor='black', markersize=12),
             ]
             
@@ -461,22 +171,6 @@ class PhaseDiagramPlotting3Phase:
     def _get_phase_colors(self, phase_series, role):
         return phase_series.map({"FCC": self.COLORS[f"{role}_FCC"], "Liquid": self.COLORS[f"{role}_Liquid"]})
 
-    def _get_skin_styles(self, df):
-        edge_colors = pd.Series(['none'] * len(df), index=df.index)
-        line_widths = pd.Series([0.0] * len(df), index=df.index)
-        has_skin = df["HasSkin"]
-        if has_skin.any():
-            # --- FIX 4a: Increase line width drastically ---
-            FIXED_WIDTH = 2.5 # Changed from 1.0 to 2.5
-            
-            mask_a = has_skin & (df["xB_skin"] < 0.5)
-            edge_colors.loc[mask_a] = self.COLORS["Skin_A"]
-            line_widths.loc[mask_a] = FIXED_WIDTH
-            mask_b = has_skin & (df["xB_skin"] >= 0.5)
-            edge_colors.loc[mask_b] = self.COLORS["Skin_B"]
-            line_widths.loc[mask_b] = FIXED_WIDTH
-        return edge_colors.tolist(), line_widths.tolist()
-
     def _create_segment_marker(self, ratio):
         x_cut = np.clip(2 * ratio - 1, -0.99, 0.99)
         theta_start = np.arccos(x_cut)
@@ -490,9 +184,6 @@ class PhaseDiagramPlotting3Phase:
 if __name__ == "__main__":
     import os
     
-    # --- USER SETTINGS ---
-    APPLY_MOVING_AVERAGE = True  # Toggle this to True or False to enable/disable smoothing
-    
     script_dir = os.path.dirname(os.path.abspath(__file__))
     target_dir = os.path.join(script_dir, "Results")
     
@@ -503,8 +194,8 @@ if __name__ == "__main__":
         import tkinter as tk
         from tkinter import filedialog
         root = tk.Tk()
-        root.attributes('-topmost', True) # Bring the dialog to the front
-        root.withdraw() # Hide the main empty Tkinter window
+        root.attributes('-topmost', True) 
+        root.withdraw() 
         target_file = filedialog.askopenfilename(
             initialdir=target_dir if os.path.exists(target_dir) else script_dir,
             title="Select raw data CSV file for 2D Phase Diagram",
@@ -512,8 +203,6 @@ if __name__ == "__main__":
         )
     except Exception as e:
         print(f"Could not open file dialog: {e}")
-        
-        # Fallback to the old behavior (latest file) if Tkinter fails
         import glob
         list_of_files = glob.glob(os.path.join(target_dir, '*.csv'))
         if list_of_files:
@@ -522,6 +211,6 @@ if __name__ == "__main__":
             
     if target_file:
         print(f"Using file: {target_file}")
-        PhaseDiagramPlotting3Phase(target_file, apply_moving_average=APPLY_MOVING_AVERAGE)
+        PhaseDiagramPlotting3Phase(target_file)
     else:
         print("No file selected. Exiting.")

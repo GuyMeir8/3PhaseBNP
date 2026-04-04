@@ -880,12 +880,12 @@ if __name__ == "__main__":
     # --- USER-DEFINED SECTION ---
     
     # Select the run mode: "FULL_SIM", "PATCH", or "AUTOFIX"
-    RUN_MODE = "PATCH"
+    RUN_MODE = "FULL_SIM"
 
     # --- FULL SIMULATION CONFIGURATION ---
     # Used if RUN_MODE is "FULL_SIM".
     # config = standard_configuration
-    full_run_config = low_res_configuration
+    full_run_config = standard_configuration
 
     # --- PATCHING CONFIGURATION ---
     # Used if RUN_MODE is "PATCH" or "AUTOFIX".

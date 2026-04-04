@@ -22,16 +22,16 @@ class ThreePhaseConfiguration:
     base_file_name: str = "3Phase_Simulation"
     
     # System Definition
-    materials: Tuple[str, str] = ("Ag", "Cu") # Material A, Material B
+    materials: Tuple[str, str] = ("Ni", "Cu") # Material A, Material B
     phases: Tuple[str, ...] = ("FCC", "Liquid")
     geometries: Tuple[str, ...] = ("Core Shell", "Janus")
 
     # Simulation Grid
     xb_step: float = 0.01
-    t_min: float =400.0
-    t_max: float = 1400.0
+    t_min: float = 1300.0
+    t_max: float = 1800.0
     t_step: float = 10.0
-    n_total_values: List[float] = field(default_factory=lambda: [1.0, 5e-17, 5e-19, 5e-21])
+    n_total_values: List[float] = field(default_factory=lambda: [1.0])
 
     @property
     def xb_values(self) -> List[float]:
@@ -55,9 +55,9 @@ standard_configuration = ThreePhaseConfiguration()
 # 2. Low Resolution (Faster, good for general trends)
 low_res_configuration = ThreePhaseConfiguration(
     base_file_name="3Phase_LowRes",
-    t_min = 400.0,
-    t_max = 1400.0,
-    n_total_values=[5e-19]
+    t_min = 1300.0,
+    t_max = 1800.0,
+    n_total_values=[1.0]
 )   
 
 # 3. Debugging (Very fast, minimal points to check if code runs)
