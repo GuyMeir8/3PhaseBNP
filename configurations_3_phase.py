@@ -31,7 +31,7 @@ class ThreePhaseConfiguration:
     t_min: float = 1300.0
     t_max: float = 1800.0
     t_step: float = 10.0
-    n_total_values: List[float] = field(default_factory=lambda: [1.0])
+    n_total_values: List[float] = field(default_factory=lambda: [5e-19])
 
     @property
     def xb_values(self) -> List[float]:
@@ -57,7 +57,7 @@ low_res_configuration = ThreePhaseConfiguration(
     base_file_name="3Phase_LowRes",
     t_min = 1300.0,
     t_max = 1800.0,
-    n_total_values=[1.0]
+    n_total_values=[5e-19]
 )   
 
 # 3. Debugging (Very fast, minimal points to check if code runs)

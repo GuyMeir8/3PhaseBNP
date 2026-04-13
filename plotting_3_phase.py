@@ -147,7 +147,7 @@ class PhaseDiagramPlotting3Phase:
                 Patch(facecolor=self.COLORS['Beta_FCC'], label='Beta (Shell/Back): FCC'),
                 Patch(facecolor=self.COLORS['Alpha_Liquid'], label='Alpha (Core/Seg): Liquid'),
                 Patch(facecolor=self.COLORS['Beta_Liquid'], label='Beta (Shell/Back): Liquid'),
-                Line2D([0], [0], marker='o', color='w', label='Skin A (Ag-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=0.5, markersize=10),
+                Line2D([0], [0], marker='o', color='w', label='Skin A (Ni-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_A'], markeredgewidth=0.5, markersize=10),
                 Line2D([0], [0], marker='o', color='w', label='Skin B (Cu-rich)', markerfacecolor='none', markeredgecolor=self.COLORS['Skin_B'], markeredgewidth=0.5, markersize=10),
                 Line2D([0], [0], marker=self._create_segment_marker(0.3), color='w', label='Janus: Alpha (Segment) / Beta (Back)', markerfacecolor='gray', markeredgecolor='black', markersize=12),
             ]

@@ -824,8 +824,8 @@ class BNPSeriesProcessor:
             # --- AUTO-FIX / INSPECTOR ---
             suspect_points = self.get_suspect_points(df)
             if suspect_points:
-                print(f"Inspector found {len(suspect_points)} suspect points. Queueing deep patch search...")
-                patch_tasks = self.generate_patch_tasks_for_n(n_total, suspect_points)
+                print(f"Inspector found {len(suspect_points)} suspect points. Queueing targeted deep search...")
+                patch_tasks = self.generate_autofix_tasks(n_total, suspect_points)
                 
                 nested_patch_results = Parallel(n_jobs=n_jobs, verbose=5)(
                     delayed(process_temperature_series_task)(task) for task in patch_tasks
