@@ -3,3 +3,6 @@ Results/*.csv
 Results_worth_saving/*.csv
 **/Results/**/*.csv
 **/Results*/**/*.csv
+
+# Ignore Google Drive temporary sync folders
+.tmp.driveupload/

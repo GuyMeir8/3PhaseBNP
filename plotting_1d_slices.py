@@ -181,7 +181,7 @@ class PhaseSlicePlotter:
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    print("Opening file dialog to select the CLEANED data file...")
+    print("Opening file dialog to select the data file...")
     target_file = None
     try:
         root = tk.Tk()
@@ -189,8 +189,8 @@ if __name__ == "__main__":
         root.withdraw() 
         target_file = filedialog.askopenfilename(
             initialdir=script_dir,
-            title="Select CLEANED data CSV file",
-            filetypes=(("CSV files", "*cleaned.csv"), ("All files", "*.*"))
+            title="Select data CSV file",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*"))
         )
     except Exception as e:
         print(f"Could not open file dialog: {e}")
@@ -201,8 +201,8 @@ if __name__ == "__main__":
         # Isopleth (Constant Composition of 0.98, Sweeping Temperature)
         PhaseSlicePlotter(
             file_name=target_file, 
-            independent_var='temperature', 
-            constant_val=0.98, 
+            independent_var='composition', 
+            constant_val=800, 
             show_transitions=True
         )
         
